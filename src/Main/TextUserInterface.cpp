@@ -20,6 +20,7 @@
 #include "Platform/Unix/Process.h"
 #endif
 
+#include <wx/platinfo.h>
 #include "Common/SecurityToken.h"
 #include "Core/RandomNumberGenerator.h"
 #include "Application.h"
@@ -40,7 +41,9 @@ namespace VeraCrypt
 #endif
 		{
 			FInputStream.reset (new wxFFileInputStream (stdin));
-			TextInputStream.reset (new wxTextInputStream (*FInputStream));
+			// Set fallback encoding of the stream converter to UTF-8
+			// to make sure we interpret multibyte symbols properly
+			TextInputStream.reset (new wxTextInputStream (*FInputStream, wxT(" \t"), wxConvAuto(wxFONTENCODING_UTF8)));
 		}
 	}
 
@@ -124,7 +127,7 @@ namespace VeraCrypt
 
 			if (verify && verPhase)
 			{
-				shared_ptr <VolumePassword> verPassword = ToUTF8Password (passwordBuf, length);
+				shared_ptr <VolumePassword> verPassword = ToUTF8Password (passwordBuf, length, CmdLine->ArgUseLegacyPassword? VolumePassword::MaxLegacySize : VolumePassword::MaxSize);
 
 				if (*password != *verPassword)
 				{
@@ -135,7 +138,7 @@ namespace VeraCrypt
 				}
 			}
 
-			password = ToUTF8Password (passwordBuf, length);
+			password = ToUTF8Password (passwordBuf, length, CmdLine->ArgUseLegacyPassword? VolumePassword::MaxLegacySize : VolumePassword::MaxSize);
 
 			if (!verPhase)
 			{
@@ -785,6 +788,10 @@ namespace VeraCrypt
 #elif defined (TC_MACOSX)
 				ShowInfo (L" 3) Mac OS Extended"); filesystems.push_back (VolumeCreationOptions::FilesystemType::MacOsExt);
 				ShowInfo (L" 4) exFAT");      filesystems.push_back (VolumeCreationOptions::FilesystemType::exFAT);
+				if (wxPlatformInfo::Get().CheckOSVersion (10, 13))
+				{
+					ShowInfo (L" 5) APFS");      filesystems.push_back (VolumeCreationOptions::FilesystemType::APFS);
+				}
 #elif defined (TC_FREEBSD) || defined (TC_SOLARIS)
 				ShowInfo (L" 3) UFS"); filesystems.push_back (VolumeCreationOptions::FilesystemType::UFS);
 #endif
@@ -881,6 +888,7 @@ namespace VeraCrypt
 #elif defined (TC_MACOSX)
 			case VolumeCreationOptions::FilesystemType::MacOsExt:	fsFormatter = "newfs_hfs"; break;
 			case VolumeCreationOptions::FilesystemType::exFAT:		fsFormatter = "newfs_exfat"; break;
+			case VolumeCreationOptions::FilesystemType::APFS:		fsFormatter = "newfs_apfs"; break;
 #elif defined (TC_FREEBSD) || defined (TC_SOLARIS)
 			case VolumeCreationOptions::FilesystemType::UFS:		fsFormatter = "newfs" ; break;
 #endif
@@ -1056,9 +1064,18 @@ namespace VeraCrypt
 			slotId = (CK_SLOT_ID) AskSelection (tokens.back().SlotId, tokens.front().SlotId);
 		}
 
-		shared_ptr <KeyfileList> keyfiles = AskKeyfiles();
-		if (keyfiles->empty())
-			throw UserAbort();
+		shared_ptr <KeyfileList> keyfiles;
+
+		if (CmdLine->ArgKeyfiles.get() && !CmdLine->ArgKeyfiles->empty())
+			keyfiles = CmdLine->ArgKeyfiles;
+		else if (!Preferences.NonInteractive)
+		{
+			keyfiles = AskKeyfiles();
+			if (keyfiles->empty())
+				throw UserAbort();
+		}
+		else
+			throw MissingArgument (SRC_POS);
 
 		foreach_ref (const Keyfile &keyfilePath, *keyfiles)
 		{

@@ -100,6 +100,10 @@ int TCFormatVolume (volatile FORMAT_VOL_PARAMETERS *volParams)
 	LARGE_INTEGER offset;
 	BOOL bFailedRequiredDASD = FALSE;
 	HWND hwndDlg = volParams->hwndDlg;
+#ifdef _WIN64
+	CRYPTO_INFO tmpCI;
+	PCRYPTO_INFO cryptoInfoBackup = NULL;
+#endif
 
 	FormatSectorSize = volParams->sectorSize;
 
@@ -350,13 +354,31 @@ begin_format:
 			nStatus = ERR_OS_ERROR;
 			goto error;
 		}
+		else if (volParams->hiddenVol && bPreserveTimestamp)
+		{
+			// ensure that Last Access and Last Write timestamps are not modified
+			ftLastAccessTime.dwHighDateTime = 0xFFFFFFFF;
+			ftLastAccessTime.dwLowDateTime = 0xFFFFFFFF;
+
+			SetFileTime (dev, NULL, &ftLastAccessTime, NULL);
+
+			if (GetFileTime ((HANDLE) dev, &ftCreationTime, &ftLastAccessTime, &ftLastWriteTime) == 0)
+				bTimeStampValid = FALSE;
+			else
+				bTimeStampValid = TRUE;
+		}
 
 		DisableFileCompression (dev);
 
 		if (!volParams->hiddenVol && !bInstantRetryOtherFilesys)
 		{
 			LARGE_INTEGER volumeSize;
+			BOOL speedupFileCreation = FALSE;
 			volumeSize.QuadPart = dataAreaSize + TC_VOLUME_HEADER_GROUP_SIZE;
+
+			// speedup for file creation only makes sens when using quick format
+			if (volParams->quickFormat && volParams->fastCreateFile)
+				speedupFileCreation = TRUE;
 
 			if (volParams->sparseFileSwitch && volParams->quickFormat)
 			{
@@ -371,21 +393,29 @@ begin_format:
 
 			// Preallocate the file
 			if (!SetFilePointerEx (dev, volumeSize, NULL, FILE_BEGIN)
-				|| !SetEndOfFile (dev)
-				|| SetFilePointer (dev, 0, NULL, FILE_BEGIN) != 0)
+				|| !SetEndOfFile (dev))
 			{
 				nStatus = ERR_OS_ERROR;
 				goto error;
 			}
-		}
-	}
 
-	if (volParams->hiddenVol && !volParams->bDevice && bPreserveTimestamp)
-	{
-		if (GetFileTime ((HANDLE) dev, &ftCreationTime, &ftLastAccessTime, &ftLastWriteTime) == 0)
-			bTimeStampValid = FALSE;
-		else
-			bTimeStampValid = TRUE;
+			if (speedupFileCreation)
+			{
+				// accelerate file creation by telling Windows not to fill all file content with zeros
+				// this has security issues since it will put existing disk content into file container
+				// We use this mechanism only when switch /fastCreateFile specific and when quick format
+				// also specified and which is documented to have security issues.
+				// we don't check returned status because failure is not issue for us
+				SetFileValidData (dev, volumeSize.QuadPart);
+			}
+
+			if (SetFilePointer (dev, 0, NULL, FILE_BEGIN) != 0)
+			{
+				nStatus = ERR_OS_ERROR;
+				goto error;
+			}
+
+		}
 	}
 
 	if (volParams->hwndDlg && volParams->bGuiMode) KillTimer (volParams->hwndDlg, TIMER_ID_RANDVIEW);
@@ -548,6 +578,17 @@ begin_format:
 		goto error;
 	}
 
+#ifdef _WIN64
+	if (IsRamEncryptionEnabled ())
+	{
+		VirtualLock (&tmpCI, sizeof (tmpCI));
+		memcpy (&tmpCI, cryptoInfo, sizeof (CRYPTO_INFO));
+		VcUnprotectKeys (&tmpCI, VcGetEncryptionID (cryptoInfo));
+		cryptoInfoBackup = cryptoInfo;
+		cryptoInfo = &tmpCI;
+	}
+#endif
+
 	nStatus = CreateVolumeHeaderInMemory (hwndDlg, FALSE,
 		header,
 		volParams->ea,
@@ -566,6 +607,15 @@ begin_format:
 		FormatSectorSize,
 		FALSE);
 
+#ifdef _WIN64
+	if (IsRamEncryptionEnabled ())
+	{
+		cryptoInfo = cryptoInfoBackup;
+		burn (&tmpCI, sizeof (CRYPTO_INFO));
+		VirtualUnlock (&tmpCI, sizeof (tmpCI));
+	}
+#endif
+
 	if (!WriteEffectiveVolumeHeader (volParams->bDevice, dev, header))
 	{
 		nStatus = ERR_OS_ERROR;
@@ -577,7 +627,27 @@ begin_format:
 	{
 		BOOL bUpdateBackup = FALSE;
 
+#ifdef _WIN64
+		if (IsRamEncryptionEnabled ())
+		{
+			VirtualLock (&tmpCI, sizeof (tmpCI));
+			memcpy (&tmpCI, cryptoInfo, sizeof (CRYPTO_INFO));
+			VcUnprotectKeys (&tmpCI, VcGetEncryptionID (cryptoInfo));
+			cryptoInfoBackup = cryptoInfo;
+			cryptoInfo = &tmpCI;
+		}
+#endif
+
 		nStatus = WriteRandomDataToReservedHeaderAreas (hwndDlg, dev, cryptoInfo, dataAreaSize, FALSE, FALSE);
+
+#ifdef _WIN64
+		if (IsRamEncryptionEnabled ())
+		{
+			cryptoInfo = cryptoInfoBackup;
+			burn (&tmpCI, sizeof (CRYPTO_INFO));
+			VirtualUnlock (&tmpCI, sizeof (tmpCI));
+		}
+#endif
 
 		if (nStatus != ERR_SUCCESS)
 			goto error;
@@ -768,6 +838,10 @@ int FormatNoFs (HWND hwndDlg, unsigned __int64 startSector, __int64 num_sectors,
 	LARGE_INTEGER startOffset;
 	LARGE_INTEGER newOffset;
 
+#ifdef _WIN64
+	CRYPTO_INFO tmpCI;
+#endif
+
 	// Seek to start sector
 	startOffset.QuadPart = startSector * FormatSectorSize;
 	if (!SetFilePointerEx ((HANDLE) dev, startOffset, &newOffset, FILE_BEGIN)
@@ -784,6 +858,16 @@ int FormatNoFs (HWND hwndDlg, unsigned __int64 startSector, __int64 num_sectors,
 	VirtualLock (originalK2, sizeof (originalK2));
 
 	memset (sector, 0, sizeof (sector));
+
+#ifdef _WIN64
+	if (IsRamEncryptionEnabled ())
+	{
+		VirtualLock (&tmpCI, sizeof (tmpCI));
+		memcpy (&tmpCI, cryptoInfo, sizeof (CRYPTO_INFO));
+		VcUnprotectKeys (&tmpCI, VcGetEncryptionID (cryptoInfo));
+		cryptoInfo = &tmpCI;
+	}
+#endif
 
 	// Remember the original secondary key (XTS mode) before generating a temporary one
 	memcpy (originalK2, cryptoInfo->k2, sizeof (cryptoInfo->k2));
@@ -847,6 +931,13 @@ int FormatNoFs (HWND hwndDlg, unsigned __int64 startSector, __int64 num_sectors,
 	VirtualUnlock (temporaryKey, sizeof (temporaryKey));
 	VirtualUnlock (originalK2, sizeof (originalK2));
 	TCfree (write_buf);
+#ifdef _WIN64
+	if (IsRamEncryptionEnabled ())
+	{
+		burn (&tmpCI, sizeof (CRYPTO_INFO));
+		VirtualUnlock (&tmpCI, sizeof (tmpCI));
+	}
+#endif
 
 	return 0;
 
@@ -858,6 +949,13 @@ fail:
 	VirtualUnlock (temporaryKey, sizeof (temporaryKey));
 	VirtualUnlock (originalK2, sizeof (originalK2));
 	TCfree (write_buf);
+#ifdef _WIN64
+	if (IsRamEncryptionEnabled ())
+	{
+		burn (&tmpCI, sizeof (CRYPTO_INFO));
+		VirtualUnlock (&tmpCI, sizeof (tmpCI));
+	}
+#endif
 
 	SetLastError (err);
 	return (retVal ? retVal : ERR_OS_ERROR);

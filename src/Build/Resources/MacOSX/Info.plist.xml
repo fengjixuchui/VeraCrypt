@@ -74,7 +74,7 @@
 	<string>TRUE</string>
 
 	<key>CFBundleVersion</key>
-	<string>1.24.5</string>
+	<string>1.24.14</string>
 
 	<key>CFBundleShortVersionString</key>
 	<string>_VERSION_</string>
@@ -82,14 +82,8 @@
 	<key>CFBundleLongVersionString</key>
 	<string>VeraCrypt _VERSION_</string>
 
-	<key>LSArchitecturePriority</key>
-	<array>
-		<string>x86_64</string>
-		<string>i386</string>
-	</array>
-
 	<key>LSMinimumSystemVersion</key>
-	<string>10.7.0</string>
+	<string>10.9.0</string>
 
 	<key>LSRequiresCarbon</key>
 	<false/>

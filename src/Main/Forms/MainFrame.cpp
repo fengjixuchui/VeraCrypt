@@ -99,6 +99,9 @@ namespace VeraCrypt
 		Connect( wxID_ANY, wxEVT_COMMAND_PREF_UPDATED, wxCommandEventHandler( MainFrame::OnPreferencesUpdated ) );
 		Connect( wxID_ANY, wxEVT_COMMAND_OPEN_VOLUME_REQUEST, wxCommandEventHandler( MainFrame::OnOpenVolumeSystemRequest ) );
 
+#ifdef TC_MACOSX
+		Connect( wxID_ANY, wxEVT_MOVE, wxMoveEventHandler( MainFrame::OnMoveHandler ) );
+#endif
 	}
 
 	MainFrame::~MainFrame ()
@@ -119,6 +122,9 @@ namespace VeraCrypt
 		Disconnect( wxID_ANY, wxEVT_COMMAND_UPDATE_VOLUME_LIST, wxCommandEventHandler( MainFrame::OnUpdateVolumeList ) );
 		Disconnect( wxID_ANY, wxEVT_COMMAND_PREF_UPDATED, wxCommandEventHandler( MainFrame::OnPreferencesUpdated ) );
 		Disconnect( wxID_ANY, wxEVT_COMMAND_OPEN_VOLUME_REQUEST, wxCommandEventHandler( MainFrame::OnOpenVolumeSystemRequest ) );
+#ifdef TC_MACOSX
+		Disconnect( wxID_ANY, wxEVT_MOVE, wxMoveEventHandler( MainFrame::OnMoveHandler ) );
+#endif
 		Core->VolumeMountedEvent.Disconnect (this);
 		Core->VolumeDismountedEvent.Disconnect (this);
 		Gui->OpenVolumeSystemRequestEvent.Disconnect (this);
@@ -393,10 +399,8 @@ namespace VeraCrypt
 		};
 
 		SetDropTarget (new FileDropTarget (this));
-#ifdef TC_MACOSX
 		foreach (wxWindow *c, MainPanel->GetChildren())
 			c->SetDropTarget (new FileDropTarget (this));
-#endif
 
 		// Volume history
 		VolumeHistory::ConnectComboBox (VolumePathComboBox);
@@ -727,6 +731,7 @@ namespace VeraCrypt
 #ifdef TC_MACOSX
 		if (Gui->IsInBackgroundMode())
 			Gui->SetBackgroundMode (false);
+		EnsureVisible ();
 #endif
 		AboutDialog dialog (this);
 		dialog.ShowModal();
@@ -1724,4 +1729,11 @@ namespace VeraCrypt
 		Core->WipePasswordCache();
 		UpdateWipeCacheButton();
 	}
+	
+#ifdef TC_MACOSX
+	void MainFrame::OnMoveHandler(wxMoveEvent& event)
+	{
+		EnsureVisible (true);
+	}
+#endif
 }

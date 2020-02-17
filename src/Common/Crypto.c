@@ -252,7 +252,7 @@ void EncipherBlocks (int cipher, void *dataPtr, void *ks, size_t blockCount)
 #endif
 	}
 #endif
-#if CRYPTOPP_BOOL_X64
+#if CRYPTOPP_BOOL_X64 && !defined(CRYPTOPP_DISABLE_ASM)
    else if (cipher == TWOFISH)	{
 			twofish_encrypt_blocks(ks, data, data, (uint32) blockCount);
 	}
@@ -369,7 +369,7 @@ void DecipherBlocks (int cipher, void *dataPtr, void *ks, size_t blockCount)
 #endif
 	}
 #endif
-#if CRYPTOPP_BOOL_X64
+#if CRYPTOPP_BOOL_X64 && !defined(CRYPTOPP_DISABLE_ASM)
    else if (cipher == TWOFISH)	{
 			twofish_decrypt_blocks(ks, data, data, (uint32) blockCount);
 	}
@@ -464,7 +464,7 @@ BOOL CipherSupportsIntraDataUnitParallelization (int cipher)
 		|| (cipher == SERPENT && HasSSE2())
 		|| (cipher == KUZNYECHIK && HasSSE2())
 #endif
-#if CRYPTOPP_BOOL_X64
+#if CRYPTOPP_BOOL_X64 && !defined(CRYPTOPP_DISABLE_ASM)
 		|| (cipher == TWOFISH)
 		|| (cipher == CAMELLIA)
 #endif
@@ -1217,7 +1217,7 @@ BOOL IsHwEncryptionEnabled ()
 
 #endif // !TC_WINDOWS_BOOT
 
-#ifndef TC_WINDOWS_BOOT
+#if !defined (TC_WINDOWS_BOOT) && !defined (_UEFI)
 
 static BOOL CpuRngDisabled = TRUE;
 static BOOL RamEncryptionEnabled = FALSE;

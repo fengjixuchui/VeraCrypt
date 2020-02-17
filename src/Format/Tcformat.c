@@ -250,6 +250,7 @@ int CmdVolumeFilesystem = FILESYS_NONE;
 unsigned __int64 CmdVolumeFileSize = 0;
 BOOL CmdSparseFileSwitch = FALSE;
 BOOL CmdQuickFormat = FALSE;
+BOOL CmdFastCreateFile = FALSE;
 
 BOOL bForceOperation = FALSE;
 
@@ -282,6 +283,7 @@ BOOL bDisplayPoolContents = TRUE;
 
 volatile BOOL bSparseFileSwitch = FALSE;
 volatile BOOL quickFormat = FALSE;
+volatile BOOL fastCreateFile = FALSE;
 volatile BOOL dynamicFormat = FALSE; /* this variable represents the sparse file flag. */
 volatile int fileSystem = FILESYS_NONE;
 volatile int clusterSize = 0;
@@ -2635,6 +2637,7 @@ static void __cdecl volTransformThreadFunction (void *hwndDlgArg)
 	volParams->clusterSize = clusterSize;
 	volParams->sparseFileSwitch = dynamicFormat;
 	volParams->quickFormat = quickFormat;
+	volParams->fastCreateFile = fastCreateFile;
 	volParams->sectorSize = GetFormatSectorSize();
 	volParams->realClusterSize = &realClusterSize;
 	volParams->password = &volumePassword;
@@ -3313,6 +3316,12 @@ BOOL IsSparseFile (HWND hwndDlg)
 
 	if (bPreserveTimestamp)
 	{
+		FILETIME ftLastAccessTime;
+		ftLastAccessTime.dwHighDateTime = 0xFFFFFFFF;
+		ftLastAccessTime.dwLowDateTime = 0xFFFFFFFF;
+
+		SetFileTime (hFile, NULL, &ftLastAccessTime, NULL);
+
 		if (GetFileTime (hFile, NULL, &ftLastAccessTime, NULL) == 0)
 			bTimeStampValid = FALSE;
 		else
@@ -3352,6 +3361,12 @@ BOOL GetFileVolSize (HWND hwndDlg, unsigned __int64 *size)
 
 	if (bPreserveTimestamp)
 	{
+		FILETIME ftLastAccessTime;
+		ftLastAccessTime.dwHighDateTime = 0xFFFFFFFF;
+		ftLastAccessTime.dwLowDateTime = 0xFFFFFFFF;
+
+		SetFileTime (hFile, NULL, &ftLastAccessTime, NULL);
+
 		if (GetFileTime (hFile, NULL, &ftLastAccessTime, NULL) == 0)
 			bTimeStampValid = FALSE;
 		else
@@ -4391,7 +4406,8 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				SetCheckBox (hwndDlg, IDC_PIM_ENABLE, PimEnable);
 
 				SetCheckBox (hwndDlg, IDC_KEYFILES_ENABLE, KeyFilesEnable && !SysEncInEffect());
-				EnableWindow (GetDlgItem (hwndDlg, IDC_KEY_FILES), KeyFilesEnable);
+				EnableWindow (GetDlgItem (hwndDlg, IDC_KEY_FILES), KeyFilesEnable && !SysEncInEffect());
+				EnableWindow (GetDlgItem (hwndDlg, IDC_KEYFILES_ENABLE), !SysEncInEffect());
 
 				SetWindowTextW (GetDlgItem (hwndDlg, IDC_BOX_HELP), str);
 
@@ -4546,6 +4562,7 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			SetWindowTextW (GetDlgItem (GetParent (hwndDlg), IDC_NEXT), GetString ("NEXT"));
 			SetWindowTextW (GetDlgItem (GetParent (hwndDlg), IDC_PREV), GetString ("PREV"));
 			SetWindowTextW (GetDlgItem (hwndDlg, IDT_RESCUE_DISK_INFO), bSystemIsGPT? GetString ("RESCUE_DISK_EFI_INFO"): GetString ("RESCUE_DISK_INFO"));
+			SetCheckBox (hwndDlg, IDC_SKIP_RESCUE_VERIFICATION, bDontVerifyRescueDisk);
 			SetDlgItemText (hwndDlg, IDC_RESCUE_DISK_ISO_PATH, szRescueDiskISO);
 			EnableWindow (GetDlgItem (GetParent (hwndDlg), IDC_NEXT), (GetWindowTextLength (GetDlgItem (hwndDlg, IDC_RESCUE_DISK_ISO_PATH)) > 1));
 			EnableWindow (GetDlgItem (GetParent (hwndDlg), IDC_PREV), TRUE);
@@ -6128,6 +6145,12 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 			ExtractCommandLine (hwndDlg, (wchar_t *) lParam);
 
+			if (EnableMemoryProtection)
+			{
+				/* Protect this process memory from being accessed by non-admin users */
+				EnableProcessProtection ();
+			}
+
 			if (ComServerMode)
 			{
 				InitDialog (hwndDlg);
@@ -6139,6 +6162,8 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				}
 				exit (0);
 			}
+
+			fastCreateFile = CmdFastCreateFile;
 
 			if (DirectCreationMode)
 			{
@@ -6242,7 +6267,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				}
 				else
 				{
-					if (!dynamicFormat && (nVolumeSize > free.QuadPart))
+					if (!dynamicFormat && !bDontCheckFileContainerSize && (nVolumeSize > free.QuadPart))
 					{
 						AbortProcess ("ERR_CONTAINER_SIZE_TOO_BIG");
 					}
@@ -8981,6 +9006,8 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 				OptionForce,
 				OptionNoSizeCheck,
 				OptionQuickFormat,
+				OptionFastCreateFile,
+				OptionEnableMemoryProtection,
 			};
 
 			argument args[]=
@@ -9003,6 +9030,8 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 				{ OptionForce,					L"/force",			NULL, FALSE },
 				{ OptionNoSizeCheck,			L"/nosizecheck",	NULL, FALSE },
 				{ OptionQuickFormat,			L"/quick",	NULL, FALSE },
+				{ OptionFastCreateFile,			L"/fastcreatefile",	NULL, FALSE },
+				{ OptionEnableMemoryProtection,	L"/protectMemory",	NULL, FALSE },
 
 				// Internal
 				{ CommandResumeSysEncLogOn,		L"/acsysenc",		L"/a", TRUE },
@@ -9357,6 +9386,14 @@ void ExtractCommandLine (HWND hwndDlg, wchar_t *lpszCommandLine)
 
 			case OptionQuickFormat:
 				CmdQuickFormat = TRUE;
+				break;
+
+			case OptionFastCreateFile:
+				CmdFastCreateFile = TRUE;
+				break;
+
+			case OptionEnableMemoryProtection:
+				EnableMemoryProtection = TRUE;
 				break;
 
 			case OptionHistory:

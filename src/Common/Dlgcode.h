@@ -124,6 +124,7 @@ extern BOOL bHideWaitingDialog;
 extern BOOL bCmdHideWaitingDialog;
 extern BOOL bCmdHideWaitingDialogValid;
 extern BOOL bUseSecureDesktop;
+extern BOOL bSecureDesktopOngoing;
 extern BOOL bUseLegacyMaxPasswordLength;
 extern BOOL bCmdUseSecureDesktop;
 extern BOOL bCmdUseSecureDesktopValid;
@@ -163,6 +164,10 @@ extern BOOL LastMountedVolumeDirty;
 extern BOOL MountVolumesAsSystemFavorite;
 extern BOOL FavoriteMountOnArrivalInProgress;
 extern BOOL MultipleMountOperationInProgress;
+
+extern volatile BOOL NeedPeriodicDeviceListUpdate;
+extern BOOL DisablePeriodicDeviceListUpdate;
+extern BOOL EnableMemoryProtection;
 
 #ifndef SETUP
 extern BOOL bLanguageSetInSetup;
@@ -347,6 +352,7 @@ BOOL CloseVolumeExplorerWindows (HWND hwnd, int driveNo);
 BOOL UpdateDriveCustomLabel (int driveNo, wchar_t* effectiveLabel, BOOL bSetValue);
 BOOL CheckCapsLock (HWND hwnd, BOOL quiet);
 BOOL CheckFileExtension (wchar_t *fileName);
+BOOL IsTrueCryptFileExtension (wchar_t *fileName);
 void CorrectFileName (wchar_t* fileName);
 void CorrectURL (wchar_t* fileName);
 void IncreaseWrongPwdRetryCount (int count);
@@ -469,7 +475,7 @@ BOOL CALLBACK CloseTCWindowsEnum( HWND hwnd, LPARAM lParam);
 BOOL CALLBACK FindTCWindowEnum (HWND hwnd, LPARAM lParam);
 BYTE *MapResource (wchar_t *resourceType, int resourceId, PDWORD size);
 void InconsistencyResolved (char *msg);
-void ReportUnexpectedState (char *techInfo);
+void ReportUnexpectedState (const char *techInfo);
 BOOL SelectMultipleFiles (HWND hwndDlg, const char *stringId, wchar_t *lpszFileName, size_t cbFileName, BOOL keepHistory);
 BOOL SelectMultipleFilesNext (wchar_t *lpszFileName, size_t cbFileName);
 void OpenOnlineHelp ();
@@ -505,7 +511,9 @@ BOOL InitSecurityTokenLibrary (HWND hwndDlg);
 BOOL FileHasReadOnlyAttribute (const wchar_t *path);
 BOOL IsFileOnReadOnlyFilesystem (const wchar_t *path);
 void CheckFilesystem (HWND hwndDlg, int driveNo, BOOL fixErrors);
+BOOL BufferContainsPattern (const byte *buffer, size_t bufferSize, const byte *pattern, size_t patternSize);
 BOOL BufferContainsString (const byte *buffer, size_t bufferSize, const char *str);
+BOOL BufferContainsWideString (const byte *buffer, size_t bufferSize, const wchar_t *str);
 int AskNonSysInPlaceEncryptionResume (HWND hwndDlg, BOOL* pbDecrypt);
 BOOL RemoveDeviceWriteProtection (HWND hwndDlg, wchar_t *devicePath);
 void EnableElevatedCursorChange (HWND parent);
@@ -539,6 +547,7 @@ void GetInstallationPath (HWND hwndDlg, wchar_t* szInstallPath, DWORD cchSize, B
 BOOL GetSetupconfigLocation (wchar_t* path, DWORD cchSize);
 BOOL BufferHasPattern (const unsigned char* buffer, size_t bufferLen, const void* pattern, size_t patternLen);
 BOOL EnableProcessProtection();
+void SafeOpenURL (LPCWSTR szUrl);
 #ifdef _WIN64
 void GetAppRandomSeed (unsigned char* pbRandSeed, size_t cbRandSeed);
 #endif

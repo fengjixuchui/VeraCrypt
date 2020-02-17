@@ -41,9 +41,9 @@ namespace VeraCrypt
 
 		TC_SERIALIZABLE (VolumePassword);
 
-		static const size_t MaxLegacySize = 64;
-		static const size_t MaxSize = 128;
-		static const size_t WarningSizeThreshold = 12;
+		static const size_t MaxLegacySize;
+		static const size_t MaxSize;
+		static const size_t WarningSizeThreshold;
 
 	protected:
 		void AllocateBuffer ();
@@ -81,6 +81,7 @@ namespace VeraCrypt
 	TC_EXCEPTION (PasswordEmpty); \
 	TC_EXCEPTION (PasswordTooLong); \
 	TC_EXCEPTION (PasswordUTF8TooLong); \
+	TC_EXCEPTION (PasswordLegacyUTF8TooLong); \
 	TC_EXCEPTION (PasswordUTF8Invalid); \
 	TC_EXCEPTION (UnportablePassword);
 

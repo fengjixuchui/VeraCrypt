@@ -188,6 +188,10 @@ BOOL MountVolumesAsSystemFavorite = FALSE;
 BOOL FavoriteMountOnArrivalInProgress = FALSE;
 BOOL MultipleMountOperationInProgress = FALSE;
 
+volatile BOOL NeedPeriodicDeviceListUpdate = FALSE;
+BOOL DisablePeriodicDeviceListUpdate = FALSE;
+BOOL EnableMemoryProtection = FALSE;
+
 BOOL WaitDialogDisplaying = FALSE;
 
 /* Handle to the device driver */
@@ -220,6 +224,9 @@ static std::vector<HostDevice> rawHostDeviceList;
 
 /* Critical section used to ensure that only one thread at a time can create a secure desktop */
 CRITICAL_SECTION csSecureDesktop;
+
+/* Boolean that indicates if our Secure Desktop is active and being used or not */
+BOOL bSecureDesktopOngoing = FALSE;
 
 HINSTANCE hInst = NULL;
 HCURSOR hCursor = NULL;
@@ -294,6 +301,7 @@ HMODULE hntmartadll = NULL;
 HMODULE hwinscarddll = NULL;
 HMODULE hmsvcrtdll = NULL;
 HMODULE hWinTrustLib = NULL;
+HMODULE hAdvapi32Dll = NULL;
 
 #define FREE_DLL(h)	if (h) { FreeLibrary (h); h = NULL;}
 
@@ -330,6 +338,18 @@ typedef HRESULT (STDAPICALLTYPE *SHStrDupWPtr)(LPCWSTR psz, LPWSTR *ppwsz);
 // ChangeWindowMessageFilter
 typedef BOOL (WINAPI *ChangeWindowMessageFilterPtr) (UINT, DWORD);
 
+typedef BOOL (WINAPI *CreateProcessWithTokenWFn)(
+    __in        HANDLE hToken,
+    __in        DWORD dwLogonFlags,
+    __in_opt    LPCWSTR lpApplicationName,
+    __inout_opt LPWSTR lpCommandLine,
+    __in        DWORD dwCreationFlags,
+    __in_opt    LPVOID lpEnvironment,
+    __in_opt    LPCWSTR lpCurrentDirectory,
+    __in        LPSTARTUPINFOW lpStartupInfo,
+    __out       LPPROCESS_INFORMATION lpProcessInformation
+      );
+
 SetDllDirectoryPtr SetDllDirectoryFn = NULL;
 SetSearchPathModePtr SetSearchPathModeFn = NULL;
 SetDefaultDllDirectoriesPtr SetDefaultDllDirectoriesFn = NULL;
@@ -344,6 +364,7 @@ SetupOpenInfFileWPtr SetupOpenInfFileWFn = NULL;
 SHDeleteKeyWPtr SHDeleteKeyWFn = NULL;
 SHStrDupWPtr SHStrDupWFn = NULL;
 ChangeWindowMessageFilterPtr ChangeWindowMessageFilterFn = NULL;
+CreateProcessWithTokenWFn CreateProcessWithTokenWPtr = NULL;
 
 typedef LONG (WINAPI *WINVERIFYTRUST)(HWND hwnd, GUID *pgActionID, LPVOID pWVTData);
 typedef CRYPT_PROVIDER_DATA* (WINAPI *WTHELPERPROVDATAFROMSTATEDATA)(HANDLE hStateData);
@@ -360,12 +381,12 @@ static WTHELPERGETPROVSIGNERFROMCHAIN WTHelperGetProvSignerFromChainFn = NULL;
 static WTHELPERGETPROVCERTFROMCHAIN WTHelperGetProvCertFromChainFn = NULL;
 
 static unsigned char gpbSha1CodeSignCertFingerprint[64] = {
-	0xCD, 0xF3, 0x05, 0xAD, 0xAE, 0xD3, 0x91, 0xF2, 0x0D, 0x95, 0x95, 0xAC,
-	0x76, 0x09, 0x35, 0x53, 0x11, 0x00, 0x4D, 0xDD, 0x56, 0x02, 0xBD, 0x09,
-	0x76, 0x57, 0xE1, 0xFA, 0xFA, 0xF4, 0x86, 0x09, 0x28, 0xA4, 0x0D, 0x1C,
-	0x68, 0xE7, 0x68, 0x31, 0xD3, 0xB6, 0x62, 0x9C, 0x75, 0x91, 0xAB, 0xB5,
-	0x6F, 0x1A, 0x75, 0xE7, 0x13, 0x2F, 0xF1, 0xB1, 0x14, 0xBF, 0x5F, 0x00,
-	0x40, 0xCE, 0x17, 0x6C
+	0x64, 0x4C, 0x59, 0x15, 0xC5, 0xD4, 0x31, 0x2A, 0x73, 0x12, 0xC4, 0xA6,
+	0xF2, 0x2C, 0xE8, 0x7E, 0xA8, 0x05, 0x53, 0xB5, 0x99, 0x9A, 0xF5, 0xD1,
+	0xBE, 0x57, 0x56, 0x3D, 0x2F, 0xCA, 0x0B, 0x2F, 0xEF, 0x57, 0xFB, 0xA0,
+	0x03, 0xEF, 0x66, 0x4D, 0xBF, 0xEE, 0x25, 0xBC, 0x22, 0xDD, 0x5C, 0x15,
+	0x47, 0xD6, 0x6F, 0x57, 0x94, 0xBB, 0x65, 0xBC, 0x5C, 0xAA, 0xE8, 0x80,
+	0xFB, 0xD0, 0xEF, 0x00
 };
 
 typedef HRESULT (WINAPI *SHGETKNOWNFOLDERPATH) (
@@ -752,6 +773,7 @@ void AbortProcessDirect (wchar_t *abortMsg)
 	FREE_DLL (hntmartadll);
 	FREE_DLL (hwinscarddll);
 	FREE_DLL (hmsvcrtdll);
+	FREE_DLL (hAdvapi32Dll);
 
 	exit (1);
 }
@@ -802,6 +824,7 @@ void AbortProcessSilent (void)
 	FREE_DLL (hntmartadll);
 	FREE_DLL (hwinscarddll);
 	FREE_DLL (hmsvcrtdll);
+	FREE_DLL (hAdvapi32Dll);
 
 	// Note that this function also causes localcleanup() to be called (see atexit())
 	exit (1);
@@ -2897,9 +2920,6 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 	char langId[6];	
 	InitCommonControlsPtr InitCommonControlsFn = NULL;	
 	wchar_t modPath[MAX_PATH];
-	
-	/* Protect this process memory from being accessed by non-admin users */
-	EnableProcessProtection ();
 
 	GetModuleFileNameW (NULL, modPath, ARRAYSIZE (modPath));
 
@@ -3008,6 +3028,7 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 		AbortProcess ("INIT_DLL");
 
 	LoadSystemDll (L"Riched20.dll", &hRichEditDll, FALSE, SRC_POS);
+	LoadSystemDll (L"Advapi32.dll", &hAdvapi32Dll, FALSE, SRC_POS);
 
 #if !defined(SETUP)
 	if (!VerifyModuleSignature (modPath))
@@ -3040,6 +3061,9 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 		AllowMessageInUIPI (WM_COPYGLOBALDATA);
 #endif
 	}
+
+	// Get CreateProcessWithTokenW function pointer
+	CreateProcessWithTokenWPtr = (CreateProcessWithTokenWFn) GetProcAddress(hAdvapi32Dll, "CreateProcessWithTokenW");
 
 	/* Save the instance handle for later */
 	hInst = hInstance;
@@ -3265,6 +3289,7 @@ void InitApp (HINSTANCE hInstance, wchar_t *lpszCommandLine)
 		FREE_DLL (hntmartadll);
 		FREE_DLL (hwinscarddll);
 		FREE_DLL (hmsvcrtdll);
+		FREE_DLL (hAdvapi32Dll);
 		exit (1);
 	}
 #endif
@@ -3310,6 +3335,7 @@ void FinalizeApp (void)
 	FREE_DLL (hntmartadll);
 	FREE_DLL (hwinscarddll);
 	FREE_DLL (hmsvcrtdll);
+	FREE_DLL (hAdvapi32Dll);
 }
 
 void InitHelpFileName (void)
@@ -5095,7 +5121,7 @@ void OpenVolumeExplorerWindow (int driveNo)
 	// Force explorer to discover the drive
 	SHGetFileInfo (dosName, 0, &fInfo, sizeof (fInfo), 0);
 
-	ShellExecute (NULL, L"open", dosName, NULL, NULL, SW_SHOWNORMAL);
+	SafeOpenURL (dosName);
 }
 
 static BOOL explorerCloseSent;
@@ -5503,11 +5529,11 @@ static void DisplayBenchmarkResults (HWND hwndDlg)
 			SendMessageW (hList, LVM_SETITEMW, 0, (LPARAM)&LvItem); 
 			break;
 		case BENCHMARK_TYPE_PRF:
-			swprintf_s (item1, sizeof(item1) / sizeof(item1[0]), L"%d ms", benchmarkTable[i].meanBytesPerSec);
+			swprintf_s (item1, sizeof(item1) / sizeof(item1[0]), L"%d ms", (int) benchmarkTable[i].meanBytesPerSec);
 			LvItem.iSubItem = 1;
 			LvItem.pszText = item1;
 			SendMessageW (hList, LVM_SETITEMW, 0, (LPARAM)&LvItem); 
-			swprintf_s (item1, sizeof(item1) / sizeof(item1[0]), L"%d", benchmarkTable[i].decSpeed);
+			swprintf_s (item1, sizeof(item1) / sizeof(item1[0]), L"%d", (int) benchmarkTable[i].decSpeed);
 			LvItem.iSubItem = 2;
 			LvItem.pszText = item1;
 			SendMessageW (hList, LVM_SETITEMW, 0, (LPARAM)&LvItem); 
@@ -7364,6 +7390,15 @@ BOOL CheckFileExtension (wchar_t *fileName)
 	return FALSE;
 }
 
+BOOL IsTrueCryptFileExtension (wchar_t *fileName)
+{
+	wchar_t *ext = wcsrchr (fileName, L'.');
+	if (ext && !_wcsicmp (ext, L".tc"))
+		return TRUE;
+	else
+		return FALSE;
+}
+
 void CorrectFileName (wchar_t* fileName)
 {
 	/* replace '/' by '\' */
@@ -7495,7 +7530,10 @@ int GetLastAvailableDrive ()
 
 BOOL IsDriveAvailable (int driveNo)
 {
-	return (GetUsedLogicalDrives() & (1 << driveNo)) == 0;
+	if (driveNo >= 0 && driveNo < 26)
+		return (GetUsedLogicalDrives() & (1 << driveNo)) == 0;
+	else
+		return FALSE;
 }
 
 
@@ -10493,25 +10531,37 @@ void ConfigReadCompareString (char *configKey, char *defaultValue, char *str, in
 
 void OpenPageHelp (HWND hwndDlg, int nPage)
 {
-	int r = (int)ShellExecuteW (NULL, L"open", szHelpFile, NULL, NULL, SW_SHOWNORMAL);
-
-	if (r == ERROR_FILE_NOT_FOUND)
+	if (IsAdmin ())
 	{
-		// Try the secondary help file
-		r = (int)ShellExecuteW (NULL, L"open", szHelpFile2, NULL, NULL, SW_SHOWNORMAL);
+		if (FileExists (szHelpFile))
+			SafeOpenURL (szHelpFile);
+		else if (FileExists (szHelpFile2))
+			SafeOpenURL (szHelpFile2);
+		else
+			Applink ("help");
+	}
+	else
+	{
+		int r = (int)ShellExecuteW (NULL, L"open", szHelpFile, NULL, NULL, SW_SHOWNORMAL);
 
 		if (r == ERROR_FILE_NOT_FOUND)
 		{
-			// Open local HTML help. It will fallback to online help if not found.
-			Applink ("help");
-			return;
-		}
-	}
+			// Try the secondary help file
+			r = (int)ShellExecuteW (NULL, L"open", szHelpFile2, NULL, NULL, SW_SHOWNORMAL);
 
-	if (r == SE_ERR_NOASSOC)
-	{
-		if (AskYesNo ("HELP_READER_ERROR", MainDlg) == IDYES)
-			OpenOnlineHelp ();
+			if (r == ERROR_FILE_NOT_FOUND)
+			{
+				// Open local HTML help. It will fallback to online help if not found.
+				Applink ("help");
+				return;
+			}
+		}
+
+		if (r == SE_ERR_NOASSOC)
+		{
+			if (AskYesNo ("HELP_READER_ERROR", MainDlg) == IDYES)
+				OpenOnlineHelp ();
+		}
 	}
 }
 
@@ -11015,14 +11065,30 @@ void Applink (const char *dest)
 		CorrectURL (url);
 	}
 
-	r = (int) ShellExecuteW (NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL);
-
-	if (((r == ERROR_FILE_NOT_FOUND) || (r == ERROR_PATH_NOT_FOUND)) && buildUrl)
+	if (IsAdmin ())
 	{
-		// fallbacl to online resources
-		StringCbPrintfW (url, sizeof (url), L"https://www.veracrypt.fr/en/%s", page);
-		ShellExecuteW (NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL);
-	}			
+		if (buildUrl && !FileExists (url))
+		{
+			// fallbacl to online resources
+			StringCbPrintfW (url, sizeof (url), L"https://www.veracrypt.fr/en/%s", page);
+			SafeOpenURL (url);
+		}
+		else
+		{
+			SafeOpenURL (url);
+		}
+	}
+	else
+	{
+		r = (int) ShellExecuteW (NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL);
+
+		if (((r == ERROR_FILE_NOT_FOUND) || (r == ERROR_PATH_NOT_FOUND)) && buildUrl)
+		{
+			// fallbacl to online resources
+			StringCbPrintfW (url, sizeof (url), L"https://www.veracrypt.fr/en/%s", page);
+			ShellExecuteW (NULL, L"open", url, NULL, NULL, SW_SHOWNORMAL);
+		}			
+	}
 
 	Sleep (200);
 	NormalCursor ();
@@ -11136,7 +11202,7 @@ void InconsistencyResolved (char *techInfo)
 }
 
 
-void ReportUnexpectedState (char *techInfo)
+void ReportUnexpectedState (const char *techInfo)
 {
 	wchar_t finalMsg[8024];
 
@@ -11182,10 +11248,8 @@ int OpenVolume (OpenVolumeContext *context, const wchar_t *volumePath, Password 
 	else
 		StringCbCopyW (szCFDevice, sizeof(szCFDevice), szDiskFile);
 
-	if (preserveTimestamps)
-		write = TRUE;
 
-	context->HostFileHandle = CreateFile (szCFDevice, GENERIC_READ | (write ? GENERIC_WRITE : 0), FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+	context->HostFileHandle = CreateFile (szCFDevice, GENERIC_READ | (write ? GENERIC_WRITE : (!context->IsDevice && preserveTimestamps? FILE_WRITE_ATTRIBUTES : 0)), FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
 
 	if (context->HostFileHandle == INVALID_HANDLE_VALUE)
 	{
@@ -11207,6 +11271,13 @@ int OpenVolume (OpenVolumeContext *context, const wchar_t *volumePath, Password 
 	// Remember the container modification/creation date and time
 	if (!context->IsDevice && preserveTimestamps)
 	{
+		// ensure that Last Access and Last Write timestamps are not modified
+		FILETIME ftLastAccessTime;
+		ftLastAccessTime.dwHighDateTime = 0xFFFFFFFF;
+		ftLastAccessTime.dwLowDateTime = 0xFFFFFFFF;
+
+		SetFileTime (context->HostFileHandle, NULL, &ftLastAccessTime, NULL);
+
 		if (GetFileTime (context->HostFileHandle, &context->CreationTime, &context->LastAccessTime, &context->LastWriteTime) == 0)
 			context->TimestampsValid = FALSE;
 		else
@@ -12556,6 +12627,8 @@ wstring FindDeviceByVolumeID (const BYTE volumeID [VOLUME_ID_SIZE], BOOL bFromSe
 		static std::vector<HostDevice>  volumeIdCandidates;
 
 		EnterCriticalSection (&csMountableDevices);
+		if (!NeedPeriodicDeviceListUpdate)
+			UpdateMountableHostDeviceList ();
 		std::vector<HostDevice> newDevices = mountableDevices;
 		LeaveCriticalSection (&csMountableDevices);
 
@@ -12677,23 +12750,31 @@ void CheckFilesystem (HWND hwndDlg, int driveNo, BOOL fixErrors)
 	ShellExecuteW (NULL, (!IsAdmin() && IsUacSupported()) ? L"runas" : L"open", cmdPath, param, NULL, SW_SHOW);
 }
 
-
-BOOL BufferContainsString (const byte *buffer, size_t bufferSize, const char *str)
+BOOL BufferContainsPattern (const byte *buffer, size_t bufferSize, const byte *pattern, size_t patternSize)
 {
-	size_t strLen = strlen (str);
-
-	if (bufferSize < strLen)
+	if (bufferSize < patternSize)
 		return FALSE;
 
-	bufferSize -= strLen;
+	bufferSize -= patternSize;
 
 	for (size_t i = 0; i < bufferSize; ++i)
 	{
-		if (memcmp (buffer + i, str, strLen) == 0)
+		if (memcmp (buffer + i, pattern, patternSize) == 0)
 			return TRUE;
 	}
 
 	return FALSE;
+}
+
+
+BOOL BufferContainsString (const byte *buffer, size_t bufferSize, const char *str)
+{
+	return BufferContainsPattern (buffer, bufferSize, (const byte*) str, strlen (str));
+}
+
+BOOL BufferContainsWideString (const byte *buffer, size_t bufferSize, const wchar_t *str)
+{
+	return BufferContainsPattern (buffer, bufferSize, (const byte*) str, 2 * wcslen (str));
 }
 
 
@@ -12979,7 +13060,7 @@ BOOL IsApplicationInstalled (const wchar_t *appName, BOOL b32bitApp)
 	}
 
 	wchar_t regName[1024];
-	DWORD regNameSize = sizeof (regName);
+	DWORD regNameSize = ARRAYSIZE (regName);
 	DWORD index = 0;
 	while (RegEnumKeyEx (unistallKey, index++, regName, &regNameSize, NULL, NULL, NULL, NULL) == ERROR_SUCCESS)
 	{
@@ -13096,7 +13177,7 @@ BOOL GetPassword (HWND hwndDlg, UINT ctrlID, char* passValue, int bufSize, BOOL 
 		{
 			SetFocus (GetDlgItem(hwndDlg, ctrlID));
 			if (GetLastError () == ERROR_INSUFFICIENT_BUFFER)
-				Error ("PASSWORD_UTF8_TOO_LONG", hwndDlg);
+				Error ((bufSize == (MAX_LEGACY_PASSWORD + 1))? "LEGACY_PASSWORD_UTF8_TOO_LONG": "PASSWORD_UTF8_TOO_LONG", hwndDlg);
 			else
 				Error ("PASSWORD_UTF8_INVALID", hwndDlg);
 		}
@@ -13384,7 +13465,8 @@ BOOL DeleteDirectory (const wchar_t* szDirName)
 static BOOL GenerateRandomString (HWND hwndDlg, LPTSTR szName, DWORD maxCharsCount)
 {
 	BOOL bRet = FALSE;
-	if (Randinit () != ERR_SUCCESS) 
+	int alreadyInitialized = 0;
+	if (RandinitWithCheck (&alreadyInitialized) != ERR_SUCCESS) 
 	{
 		handleError (hwndDlg, (CryptoAPILastError == ERROR_SUCCESS)? ERR_RAND_INIT_FAILED : ERR_CAPI_INIT_FAILED, SRC_POS);
 	}
@@ -13408,6 +13490,19 @@ static BOOL GenerateRandomString (HWND hwndDlg, LPTSTR szName, DWORD maxCharsCou
 		}
 		burn (indexes, maxCharsCount + 1);
 		free (indexes);
+		
+		/* If RNG was not initialized before us, then stop it in order to
+		 * stop the fast poll thread which consumes CPU. Next time a critical operation
+		 * that requires RNG is performed, it will be initialized again.
+		 *
+		 * We do this because since the addition of secure desktop support, every time
+		 * secure desktop is displayed, the RNG fast poll thread was started even if the 
+		 * user will never perform any critical operation that requires random bytes.
+		 */
+		if (!alreadyInitialized)
+		{
+			RandStop (FALSE);
+		}
 	}
 
 	return bRet;
@@ -13575,75 +13670,79 @@ INT_PTR SecureDesktopDialogBoxParam(
 	INT_PTR retValue = 0;
 	BOOL bEffectiveUseSecureDesktop = bCmdUseSecureDesktopValid? bCmdUseSecureDesktop : bUseSecureDesktop;
 
-	if (bEffectiveUseSecureDesktop && GenerateRandomString (hWndParent, szDesktopName, 64))
+	if (bEffectiveUseSecureDesktop)
 	{
-		map<DWORD, BOOL> ctfmonBeforeList, ctfmonAfterList;
-		DWORD desktopAccess = DESKTOP_CREATEMENU | DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP | DESKTOP_WRITEOBJECTS;
-		HDESK hSecureDesk;
-
-		HDESK hInputDesk = NULL;
-
 		EnterCriticalSection (&csSecureDesktop);
-		finally_do ({ LeaveCriticalSection (&csSecureDesktop); });
+		bSecureDesktopOngoing = TRUE;
+		finally_do ({ bSecureDesktopOngoing = FALSE; LeaveCriticalSection (&csSecureDesktop); });
 
-		// wait for the input desktop to be available before switching to 
-		// secure desktop. Under Windows 10, the user session can be started
-		// in the background even before the user has authenticated and in this
-		// case, we wait for the user to be really authenticated before starting 
-		// secure desktop mechanism
-
-		while (!(hInputDesk = OpenInputDesktop (0, TRUE, GENERIC_READ)))
+		if (GenerateRandomString (hWndParent, szDesktopName, 64))
 		{
-			Sleep (SECUREDESKTOP_MONOTIR_PERIOD);
-		}
+			map<DWORD, BOOL> ctfmonBeforeList, ctfmonAfterList;
+			DWORD desktopAccess = DESKTOP_CREATEMENU | DESKTOP_CREATEWINDOW | DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP | DESKTOP_WRITEOBJECTS;
+			HDESK hSecureDesk;
 
-		CloseDesktop (hInputDesk);
-		
-		// get the initial list of ctfmon.exe processes before creating new desktop
-		GetCtfMonProcessIdList (ctfmonBeforeList);
+			HDESK hInputDesk = NULL;
 
-		hSecureDesk = CreateDesktop (szDesktopName, NULL, NULL, 0, desktopAccess, NULL);
-		if (hSecureDesk)
-		{
-			SecureDesktopThreadParam param;
-	
-			param.hDesk = hSecureDesk;
-			param.szDesktopName = szDesktopName;
-			param.hInstance = hInstance;
-			param.lpTemplateName = lpTemplateName;
-			param.lpDialogFunc = lpDialogFunc;
-			param.dwInitParam = dwInitParam;
-			param.retValue = 0;
+			// wait for the input desktop to be available before switching to 
+			// secure desktop. Under Windows 10, the user session can be started
+			// in the background even before the user has authenticated and in this
+			// case, we wait for the user to be really authenticated before starting 
+			// secure desktop mechanism
 
-			HANDLE hThread = ::CreateThread (NULL, 0, SecureDesktopThread, (LPVOID) &param, 0, NULL);
-			if (hThread)
+			while (!(hInputDesk = OpenInputDesktop (0, TRUE, GENERIC_READ)))
 			{
-				WaitForSingleObject (hThread, INFINITE);
-				CloseHandle (hThread);
-
-				retValue = param.retValue;
-				bSuccess = TRUE;
+				Sleep (SECUREDESKTOP_MONOTIR_PERIOD);
 			}
 
-			CloseDesktop (hSecureDesk);
+			CloseDesktop (hInputDesk);
+		
+			// get the initial list of ctfmon.exe processes before creating new desktop
+			GetCtfMonProcessIdList (ctfmonBeforeList);
 
-			// get the new list of ctfmon.exe processes in order to find the ID of the
-			// ctfmon.exe instance that corresponds to the desktop we create so that
-			// we can kill it, otherwise it would remain running
-			GetCtfMonProcessIdList (ctfmonAfterList);
-
-			for (map<DWORD, BOOL>::iterator It = ctfmonAfterList.begin(); 
-				It != ctfmonAfterList.end(); It++)
+			hSecureDesk = CreateDesktop (szDesktopName, NULL, NULL, 0, desktopAccess, NULL);
+			if (hSecureDesk)
 			{
-				if (ctfmonBeforeList[It->first] != TRUE)
+				SecureDesktopThreadParam param;
+	
+				param.hDesk = hSecureDesk;
+				param.szDesktopName = szDesktopName;
+				param.hInstance = hInstance;
+				param.lpTemplateName = lpTemplateName;
+				param.lpDialogFunc = lpDialogFunc;
+				param.dwInitParam = dwInitParam;
+				param.retValue = 0;
+
+				HANDLE hThread = ::CreateThread (NULL, 0, SecureDesktopThread, (LPVOID) &param, 0, NULL);
+				if (hThread)
 				{
-					// Kill process
-					KillProcess (It->first);
+					WaitForSingleObject (hThread, INFINITE);
+					CloseHandle (hThread);
+
+					retValue = param.retValue;
+					bSuccess = TRUE;
+				}
+
+				CloseDesktop (hSecureDesk);
+
+				// get the new list of ctfmon.exe processes in order to find the ID of the
+				// ctfmon.exe instance that corresponds to the desktop we create so that
+				// we can kill it, otherwise it would remain running
+				GetCtfMonProcessIdList (ctfmonAfterList);
+
+				for (map<DWORD, BOOL>::iterator It = ctfmonAfterList.begin(); 
+					It != ctfmonAfterList.end(); It++)
+				{
+					if (ctfmonBeforeList[It->first] != TRUE)
+					{
+						// Kill process
+						KillProcess (It->first);
+					}
 				}
 			}
-		}
 
-		burn (szDesktopName, sizeof (szDesktopName));
+			burn (szDesktopName, sizeof (szDesktopName));
+		}
 	}
 
 	if (!bSuccess)
@@ -13933,6 +14032,17 @@ BOOL EnableProcessProtection()
     PACL pACL = NULL;
     DWORD cbACL = 0;
 
+	// Acces mask
+	DWORD dwAccessMask = SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE; // same as protected process
+	
+	if (IsAdmin ())
+	{
+		// if we are running elevated, we allow CreateProcessXXX calls alongside PROCESS_DUP_HANDLE and PROCESS_QUERY_INFORMATION in order to be able 
+		// to implement secure way to open URLs (cf RunAsDesktopUser)
+		// we are still protecting against memory access from non-admon processes
+		dwAccessMask |= PROCESS_CREATE_PROCESS | PROCESS_DUP_HANDLE | PROCESS_QUERY_INFORMATION;
+	}
+
     // Open the access token associated with the calling process
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken)) {
         goto Cleanup;
@@ -13971,7 +14081,7 @@ BOOL EnableProcessProtection()
     if (!AddAccessAllowedAce(
             pACL,
             ACL_REVISION,
-            SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, // same as protected process
+            dwAccessMask,
             pTokenUser->User.Sid // pointer to the trustee's SID
             )) {
         goto Cleanup;
@@ -14000,6 +14110,190 @@ Cleanup:
     }
 
     return bSuccess;
+}
+
+// Based on sample code from: 
+//    https://blogs.msdn.microsoft.com/aaron_margosis/2009/06/06/faq-how-do-i-start-a-program-as-the-desktop-user-from-an-elevated-app/
+// start a program non-elevated as the desktop user from an elevated app
+
+static bool RunAsDesktopUser(
+  __in    const wchar_t *       szApp,
+  __in    wchar_t *             szCmdLine)
+{
+	HANDLE hThreadToken = NULL, hShellProcess = NULL, hShellProcessToken = NULL, hPrimaryToken = NULL;
+	HWND hwnd = NULL;
+	DWORD dwPID = 0;
+	BOOL ret;
+	DWORD dwLastErr;
+	STARTUPINFOW si;
+	PROCESS_INFORMATION pi;
+	bool retval = false;
+	SecureZeroMemory(&si, sizeof(si));
+	SecureZeroMemory(&pi, sizeof(pi));
+	si.cb = sizeof(si);
+
+	// locate CreateProcessWithTokenW in Advapi32.dll
+	if (!CreateProcessWithTokenWPtr)
+	{
+		return false;
+	}
+
+	if (!ImpersonateSelf (SecurityImpersonation))
+	{
+		return false;
+	}
+
+	if (!OpenThreadToken (GetCurrentThread(),  TOKEN_ADJUST_PRIVILEGES, TRUE, &hThreadToken))
+	{
+		return false;
+	}
+	else
+	{
+		TOKEN_PRIVILEGES tkp;
+		tkp.PrivilegeCount = 1;
+		LookupPrivilegeValueW(NULL, SE_INCREASE_QUOTA_NAME, &tkp.Privileges[0].Luid);
+		tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+
+		SetThreadToken (NULL, NULL);
+
+		AdjustTokenPrivileges(hThreadToken, FALSE, &tkp, 0, NULL, NULL);
+		dwLastErr = GetLastError();
+		if (ERROR_SUCCESS != dwLastErr)
+		{
+			goto cleanup;
+		}
+	}
+
+	// From this point down, we have handles to close, so make sure to clean up.
+
+	// Get an HWND representing the desktop shell.
+	// CAVEATS:  This will fail if the shell is not running (crashed or terminated), or the default shell has been
+	// replaced with a custom shell.  This also won't return what you probably want if Explorer has been terminated and
+	// restarted elevated.
+	hwnd = GetShellWindow();
+	if (NULL == hwnd)
+	{
+		dwLastErr = GetLastError();
+		goto cleanup;
+	}
+
+	// Get the PID of the desktop shell process.
+	GetWindowThreadProcessId(hwnd, &dwPID);
+	if (0 == dwPID)
+	{
+		dwLastErr = GetLastError();
+		goto cleanup;
+	}
+
+	// Open the desktop shell process in order to query it (get the token)
+	hShellProcess = OpenProcess(PROCESS_QUERY_INFORMATION, FALSE, dwPID);
+	if (!hShellProcess)
+	{
+		dwLastErr = GetLastError();
+		goto cleanup;
+	}
+
+	// Get the process token of the desktop shell.
+	ret = OpenProcessToken(hShellProcess, TOKEN_DUPLICATE, &hShellProcessToken);
+	if (!ret)
+	{
+		dwLastErr = GetLastError();
+		goto cleanup;
+	}
+
+	// Duplicate the shell's process token to get a primary token.
+	// Based on experimentation, this is the minimal set of rights required for CreateProcessWithTokenW (contrary to current documentation).
+	const DWORD dwTokenRights = TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID;
+	ret = DuplicateTokenEx(hShellProcessToken, dwTokenRights, NULL, SecurityImpersonation, TokenPrimary, &hPrimaryToken);
+	if (!ret)
+	{
+		dwLastErr = GetLastError();
+		goto cleanup;
+	}
+
+	// Start the target process with the new token.
+	ret = CreateProcessWithTokenWPtr(
+		hPrimaryToken,
+		0,
+		szApp,
+		szCmdLine,
+		0,
+		NULL,
+		NULL,
+		&si,
+		&pi);
+	if (!ret)
+	{
+		dwLastErr = GetLastError();
+		goto cleanup;
+	}
+
+	// Make sure to close HANDLEs return in the PROCESS_INFORMATION.
+	CloseHandle(pi.hProcess);
+	CloseHandle(pi.hThread);
+
+	retval = true;
+
+cleanup:
+	// Clean up resources
+	if (hShellProcessToken) CloseHandle(hShellProcessToken);
+	if (hPrimaryToken) CloseHandle(hPrimaryToken);
+	if (hShellProcess) CloseHandle(hShellProcess);
+	if (hThreadToken) CloseHandle(hThreadToken);
+	RevertToSelf ();
+	if (!retval)
+		SetLastError (dwLastErr);
+	return retval;
+}
+
+// This function checks if the process is running with elevated privileges or not
+BOOL IsElevated()
+{
+	DWORD dwSize = 0;
+	HANDLE hToken = NULL;
+	TOKEN_ELEVATION tokenInformation;
+	BOOL bReturn = FALSE;
+	
+	if(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken))
+	{
+		if(GetTokenInformation(hToken, TokenElevation, &tokenInformation, sizeof(TOKEN_ELEVATION), &dwSize))
+		{
+			if (tokenInformation.TokenIsElevated)
+				bReturn = TRUE;
+		}
+
+		CloseHandle(hToken);
+	}
+	return bReturn;
+}
+
+// This function always loads a URL in a non-privileged mode
+// If current process has admin privileges, we execute the command "rundll32 url.dll,FileProtocolHandler URL" as non-elevated
+// Use this security mechanism only starting from Windows Vista
+void SafeOpenURL (LPCWSTR szUrl)
+{
+	if (IsOSAtLeast (WIN_VISTA) && IsAdmin () && IsElevated())
+	{
+		WCHAR szRunDllPath[TC_MAX_PATH];
+		WCHAR szUrlDllPath[TC_MAX_PATH];
+		WCHAR szSystemPath[TC_MAX_PATH];
+		LPWSTR szCommandLine = new WCHAR[1024];
+
+		if (!GetSystemDirectory(szSystemPath, MAX_PATH))
+			StringCbCopyW(szSystemPath, sizeof(szSystemPath), L"C:\\Windows\\System32");
+
+		StringCbPrintfW(szRunDllPath, sizeof(szRunDllPath), L"%s\\%s", szSystemPath, L"rundll32.exe");
+		StringCbPrintfW(szUrlDllPath, sizeof(szUrlDllPath), L"%s\\%s", szSystemPath, L"url.dll");
+		StringCchPrintfW(szCommandLine, 1024, L"%s %s,FileProtocolHandler %s", szRunDllPath, szUrlDllPath, szUrl);
+
+		RunAsDesktopUser (NULL, szCommandLine);
+
+		delete [] szCommandLine;
+	}
+	else
+	{
+		ShellExecuteW (NULL, L"open", szUrl, NULL, NULL, SW_SHOWNORMAL);
+	}
 }
 
 #if !defined(SETUP) && defined(_WIN64)

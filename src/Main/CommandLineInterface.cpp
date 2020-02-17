@@ -30,6 +30,11 @@ namespace VeraCrypt
 		ArgSize (0),
 		ArgVolumeType (VolumeType::Unknown),
 		ArgTrueCryptMode (false),
+		ArgDisableFileSizeCheck (false),
+		ArgUseLegacyPassword (false),
+#if defined(TC_LINUX ) || defined (TC_FREEBSD)
+		ArgUseDummySudoPassword (false),
+#endif
 		StartBackgroundTask (false)
 	{
 		wxCmdLineParser parser;
@@ -96,7 +101,11 @@ namespace VeraCrypt
 		parser.AddOption (L"",	L"volume-type",			_("Volume type"));
 		parser.AddParam (								_("Volume path"), wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
 		parser.AddParam (								_("Mount point"), wxCMD_LINE_VAL_STRING, wxCMD_LINE_PARAM_OPTIONAL);
-
+		parser.AddSwitch (L"",	L"no-size-check",		_("Disable check of container size against disk free space."));
+		parser.AddSwitch (L"",	L"legacy-password-maxlength", _("Use legacy maximum password length (64 UTF-8 bytes)"));
+#if defined(TC_LINUX ) || defined (TC_FREEBSD)
+		parser.AddSwitch (L"",	L"use-dummy-sudo-password",	_("Use dummy password in sudo to detect if it is already authenticated"));
+#endif
 		wxString str;
 		bool param1IsVolume = false;
 		bool param1IsMountedVolumeSpec = false;
@@ -319,6 +328,8 @@ namespace VeraCrypt
 				}
 				else if (str.IsSameAs (L"exFAT", false))
 					ArgFilesystem = VolumeCreationOptions::FilesystemType::exFAT;
+				else if (str.IsSameAs (L"APFS", false))
+					ArgFilesystem = VolumeCreationOptions::FilesystemType::APFS;
 #elif defined (TC_FREEBSD) || defined (TC_SOLARIS)
 				else if (str.IsSameAs (L"UFS", false))
 					ArgFilesystem = VolumeCreationOptions::FilesystemType::UFS;
@@ -331,6 +342,11 @@ namespace VeraCrypt
 		ArgForce = parser.Found (L"force");
 
 		ArgTrueCryptMode = parser.Found (L"truecrypt");
+		ArgDisableFileSizeCheck = parser.Found (L"no-size-check");
+		ArgUseLegacyPassword = parser.Found (L"legacy-password-maxlength") || ArgTrueCryptMode;		
+#if defined(TC_LINUX ) || defined (TC_FREEBSD)
+		ArgUseDummySudoPassword = parser.Found (L"use-dummy-sudo-password");
+#endif
 
 #if !defined(TC_WINDOWS) && !defined(TC_MACOSX)
 		if (parser.Found (L"fs-options", &str))
@@ -402,7 +418,7 @@ namespace VeraCrypt
 			ArgNewKeyfiles = ToKeyfileList (str);
 
 		if (parser.Found (L"new-password", &str))
-			ArgNewPassword = ToUTF8Password (str.c_str());
+			ArgNewPassword = ToUTF8Password (str.c_str(), -1, ArgUseLegacyPassword? VolumePassword::MaxLegacySize : VolumePassword::MaxSize);
 
 		if (parser.Found (L"new-pim", &str))
 		{
@@ -441,7 +457,7 @@ namespace VeraCrypt
 		{
 			if (Preferences.UseStandardInput)
 				throw_err (L"--password cannot be used with --stdin");
-			ArgPassword = ToUTF8Password (str.c_str());
+			ArgPassword = ToUTF8Password (str.c_str(), -1, ArgUseLegacyPassword? VolumePassword::MaxLegacySize : VolumePassword::MaxSize);
 		}
 
 		if (parser.Found (L"pim", &str))
@@ -482,7 +498,7 @@ namespace VeraCrypt
 
 		if (parser.Found (L"protection-password", &str))
 		{
-			ArgMountOptions.ProtectionPassword = ToUTF8Password (str.c_str());
+			ArgMountOptions.ProtectionPassword = ToUTF8Password (str.c_str(), -1, ArgUseLegacyPassword? VolumePassword::MaxLegacySize : VolumePassword::MaxSize);
 			ArgMountOptions.Protection = VolumeProtection::HiddenVolumeReadOnly;
 		}
 
@@ -596,7 +612,7 @@ namespace VeraCrypt
 
         if (parser.Found (L"token-pin", &str) && !str.IsEmpty ())
         {
-            ArgTokenPin = ToUTF8Buffer (str.c_str(), str.Len ());
+            ArgTokenPin = ToUTF8Buffer (str.c_str(), str.Len (), ArgUseLegacyPassword? VolumePassword::MaxLegacySize : VolumePassword::MaxSize);
         }
 
 		if (parser.Found (L"verbose"))
@@ -771,18 +787,18 @@ namespace VeraCrypt
 		return filteredVolumes;
 	}
 
-	shared_ptr<VolumePassword> ToUTF8Password (const wchar_t* str, size_t charCount)
+	shared_ptr<VolumePassword> ToUTF8Password (const wchar_t* str, size_t charCount, size_t maxUtf8Len)
 	{
 		if (charCount > 0)
 		{
-			shared_ptr<SecureBuffer> utf8Buffer = ToUTF8Buffer (str, charCount);
+			shared_ptr<SecureBuffer> utf8Buffer = ToUTF8Buffer (str, charCount, maxUtf8Len);
 			return shared_ptr<VolumePassword>(new VolumePassword (*utf8Buffer));
 		}
 		else
 			return shared_ptr<VolumePassword>(new VolumePassword ());
 	}
 
-	shared_ptr<SecureBuffer> ToUTF8Buffer (const wchar_t* str, size_t charCount)
+	shared_ptr<SecureBuffer> ToUTF8Buffer (const wchar_t* str, size_t charCount, size_t maxUtf8Len)
 	{
 		if (charCount == (size_t) -1)
 			charCount = wcslen (str);
@@ -797,8 +813,13 @@ namespace VeraCrypt
 			ulen = utf8.FromWChar ((char*) (byte*) passwordBuf, ulen, str, charCount);
 			if (wxCONV_FAILED == ulen)
 				throw PasswordUTF8Invalid (SRC_POS);
-			if (ulen > VolumePassword::MaxSize)
-				throw PasswordUTF8TooLong (SRC_POS);
+			if (ulen > maxUtf8Len)
+			{
+				if (maxUtf8Len == VolumePassword::MaxLegacySize)
+					throw PasswordLegacyUTF8TooLong (SRC_POS);
+				else
+					throw PasswordUTF8TooLong (SRC_POS);
+			}
 
 			ConstBufferPtr utf8Buffer ((byte*) passwordBuf, ulen);
 			return shared_ptr<SecureBuffer>(new SecureBuffer (utf8Buffer));
