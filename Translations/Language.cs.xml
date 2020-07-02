@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <VeraCrypt>
-  <localization prog-version= "1.24-Update6">
+  <localization prog-version= "1.24-Update7">
     <language langid="cs" name="Čeština" en-name="Czech" version="1.1.0" translators="Vítek Moser, Lagardere" />
     <font lang="cs" class="normal" size="11" face="default" />
     <font lang="cs" class="bold" size="13" face="Arial" />
@@ -1315,7 +1315,7 @@
     <entry lang="cs" key="VKEY_0D">Enter</entry>
     <entry lang="cs" key="VKEY_13">Pauza</entry>
     <entry lang="cs" key="VKEY_14">Caps Lock</entry>
-    <entry lang="cs" key="VKEY_20">Mezernk</entry>
+    <entry lang="cs" key="VKEY_20">Mezerník</entry>
     <entry lang="cs" key="VKEY_21">Page Up</entry>
     <entry lang="cs" key="VKEY_22">Page Down</entry>
     <entry lang="cs" key="VKEY_23">End</entry>
@@ -1438,6 +1438,8 @@
     <entry lang="cs" key="IDT_BENCHMARK">Test výkonu:</entry>
     <entry lang="cs" key="IDC_DISABLE_MOUNT_MANAGER">Vytvořit virtuální zařízení bez připojení na vybrané písmeno jednotky</entry>
     <entry lang="cs" key="LEGACY_PASSWORD_UTF8_TOO_LONG">Zadané heslo je moc dlouhé: jeho reprezentace v UTF-8 přesahuje 64 bajtů.</entry>
+    <entry lang="cs" key="HIDDEN_CREDS_SAME_AS_OUTER">Skrytý svazek nesmí mít stejné heslo, PIM a souborové klíče jako vnější svazek</entry>
+    <entry lang="en" key="SYSENC_BITLOCKER_CONFLICT">VeraCrypt does not support encrypting a system drive that is already encrypted by BitLocker.</entry>
   </localization>
   <xs:schema attributeFormDefault="unqualified" elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
     <xs:element name="VeraCrypt">

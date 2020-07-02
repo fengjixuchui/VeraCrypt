@@ -49,6 +49,7 @@
 #include "../Platform/Finally.h"
 #include "../Platform/ForEach.h"
 #include "../Setup/SelfExtract.h"
+#include "../Common/EncryptionThreadPool.h"
 
 #include <Strsafe.h>
 #include <InitGuid.h>
@@ -63,6 +64,17 @@
 
 typedef BOOL (WINAPI *WTSREGISTERSESSIONNOTIFICATION)(HWND, DWORD);
 typedef BOOL (WINAPI *WTSUNREGISTERSESSIONNOTIFICATION)(HWND);
+
+#ifndef _HPOWERNOTIFY_DEF_
+#define _HPOWERNOTIFY_DEF_
+
+typedef  PVOID           HPOWERNOTIFY;
+typedef  HPOWERNOTIFY   *PHPOWERNOTIFY;
+
+#endif
+
+typedef HPOWERNOTIFY (WINAPI *REGISTERSUSPENDRESUMENOTIFICATION)(HANDLE hRecipient, DWORD Flags);
+typedef BOOL (WINAPI *UNREGISTERSUSPENDRESUMENOTIFICATION) (HPOWERNOTIFY Handle);
 
 using namespace VeraCrypt;
 
@@ -188,7 +200,13 @@ static HMODULE hWtsLib = NULL;
 static WTSREGISTERSESSIONNOTIFICATION   fnWtsRegisterSessionNotification = NULL;
 static WTSUNREGISTERSESSIONNOTIFICATION fnWtsUnRegisterSessionNotification = NULL;
 
-static void RegisterWtsNotification(HWND hWnd)
+// Used to opt-in to receive notification about power events. 
+// This is mandatory to support Windows 10 Modern Standby and Windows 8.1 Connected Standby power model.
+// https://docs.microsoft.com/en-us/windows-hardware/design/device-experiences/prepare-software-for-modern-standby
+// https://docs.microsoft.com/en-us/windows/win32/w8cookbook/desktop-activity-moderator?redirectedfrom=MSDN
+static HPOWERNOTIFY  g_hPowerNotify = NULL;
+
+static void RegisterWtsAndPowerNotification(HWND hWnd)
 {
 	if (!hWtsLib)
 	{
@@ -215,9 +233,19 @@ static void RegisterWtsNotification(HWND hWnd)
 			}
 		}
 	}
+
+	if (IsOSAtLeast (WIN_8))
+	{
+		REGISTERSUSPENDRESUMENOTIFICATION fnRegisterSuspendResumeNotification = (REGISTERSUSPENDRESUMENOTIFICATION) GetProcAddress (GetModuleHandle (L"user32.dll"), "RegisterSuspendResumeNotification");
+		if (fnRegisterSuspendResumeNotification)
+		{
+			g_hPowerNotify = fnRegisterSuspendResumeNotification ((HANDLE) hWnd, DEVICE_NOTIFY_WINDOW_HANDLE);
+		}
+		
+	}
 }
 
-static void UnregisterWtsNotification(HWND hWnd)
+static void UnregisterWtsAndPowerNotification(HWND hWnd)
 {
 	if (hWtsLib && fnWtsUnRegisterSessionNotification)
 	{
@@ -226,6 +254,14 @@ static void UnregisterWtsNotification(HWND hWnd)
 		hWtsLib = NULL;
 		fnWtsRegisterSessionNotification = NULL;
 		fnWtsUnRegisterSessionNotification = NULL;
+	}
+
+	if (IsOSAtLeast (WIN_8) && g_hPowerNotify)
+	{
+		UNREGISTERSUSPENDRESUMENOTIFICATION fnUnregisterSuspendResumeNotification = (UNREGISTERSUSPENDRESUMENOTIFICATION) GetProcAddress (GetModuleHandle (L"user32.dll"), "UnregisterSuspendResumeNotification");
+		if (fnUnregisterSuspendResumeNotification)
+			fnUnregisterSuspendResumeNotification (g_hPowerNotify);
+		g_hPowerNotify = NULL;
 	}
 }
 
@@ -435,7 +471,7 @@ void EndMainDlg (HWND hwndDlg)
 		KillTimer (hwndDlg, TIMER_ID_MAIN);
 		KillTimer (hwndDlg, TIMER_ID_UPDATE_DEVICE_LIST);
 		TaskBarIconRemove (hwndDlg);
-		UnregisterWtsNotification(hwndDlg);
+		UnregisterWtsAndPowerNotification(hwndDlg);
 		EndDialog (hwndDlg, 0);
 	}
 }
@@ -5181,9 +5217,6 @@ static BOOL Dismount (HWND hwndDlg, int nDosDriveNo)
 		if (bBeep)
 			MessageBeep (0xFFFFFFFF);
 		RefreshMainDlg (hwndDlg);
-
-		if (nCurrentOS == WIN_2000 && RemoteSession && !IsAdmin ())
-			LoadDriveLetters (hwndDlg, GetDlgItem (hwndDlg, IDC_DRIVELIST), 0);
 	}
 
 	NormalCursor ();
@@ -5357,9 +5390,6 @@ retry:
 	BroadcastDeviceChange (DBT_DEVICEREMOVECOMPLETE, 0, prevMountList.ulMountedDrives & ~mountList.ulMountedDrives);
 
 	RefreshMainDlg (hwndDlg);
-
-	if (nCurrentOS == WIN_2000 && RemoteSession && !IsAdmin ())
-		LoadDriveLetters (hwndDlg, GetDlgItem (hwndDlg, IDC_DRIVELIST), 0);
 
 	NormalCursor();
 
@@ -7290,7 +7320,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			}
 
 			if (TaskBarIconMutex != NULL)
-				RegisterWtsNotification(hwndDlg);
+				RegisterWtsAndPowerNotification(hwndDlg);
 			DoPostInstallTasks (hwndDlg);
 			ResetCurrentDirectory ();
 		}
@@ -7375,7 +7405,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 			}
 
 			TaskBarIconRemove (hwndDlg);
-			UnregisterWtsNotification(hwndDlg);
+			UnregisterWtsAndPowerNotification(hwndDlg);
 		}
 		EndMainDlg (hwndDlg);
 		localcleanup ();
@@ -7593,7 +7623,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 					&& GetDriverRefCount () < 2)
 				{
 					TaskBarIconRemove (hwndDlg);
-					UnregisterWtsNotification(hwndDlg);
+					UnregisterWtsAndPowerNotification(hwndDlg);
 					EndMainDlg (hwndDlg);
 				}
 			}
@@ -7720,7 +7750,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 							EnumWindows (CloseTCWindowsEnum, 0);
 
 							TaskBarIconRemove (hwndDlg);
-							UnregisterWtsNotification(hwndDlg);
+							UnregisterWtsAndPowerNotification(hwndDlg);
 							SendMessage (hwndDlg, WM_COMMAND, sel, 0);
 						}
 					}
@@ -7741,7 +7771,7 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 	case TC_APPMSG_CLOSE_BKG_TASK:
 		if (TaskBarIconMutex != NULL)
 			TaskBarIconRemove (hwndDlg);
-		UnregisterWtsNotification(hwndDlg);
+		UnregisterWtsAndPowerNotification(hwndDlg);
 
 		return 1;
 
@@ -8417,12 +8447,12 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 				if (bEnableBkgTask)
 				{
 					TaskBarIconAdd (hwndDlg);
-					RegisterWtsNotification(hwndDlg);
+					RegisterWtsAndPowerNotification(hwndDlg);
 				}
 				else
 				{
 					TaskBarIconRemove (hwndDlg);
-					UnregisterWtsNotification(hwndDlg);
+					UnregisterWtsAndPowerNotification(hwndDlg);
 					if (MainWindowHidden)
 						EndMainDlg (hwndDlg);
 				}
@@ -8692,12 +8722,10 @@ BOOL CALLBACK MainDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 			WaitCursor ();
 
-			if (!(nCurrentOS == WIN_2000 && RemoteSession))
-			{
-				BroadcastDeviceChange (DBT_DEVICEREMOVECOMPLETE, 0, ~driveMap);
-				Sleep (100);
-				BroadcastDeviceChange (DBT_DEVICEARRIVAL, 0, driveMap);
-			}
+
+			BroadcastDeviceChange (DBT_DEVICEREMOVECOMPLETE, 0, ~driveMap);
+			Sleep (100);
+			BroadcastDeviceChange (DBT_DEVICEARRIVAL, 0, driveMap);
 
 			LoadDriveLetters (hwndDlg, GetDlgItem (hwndDlg, IDC_DRIVELIST), 0);
 
@@ -9826,7 +9854,7 @@ BOOL TaskBarIconAdd (HWND hwnd)
 		ScreenDPI >= 120 ? 0 : 16,
 		(ScreenDPI >= 120 ? LR_DEFAULTSIZE : 0)
 		| LR_SHARED
-		| (nCurrentOS != WIN_2000 ? LR_DEFAULTCOLOR : LR_VGACOLOR)); // Windows 2000 cannot display more than 16 fixed colors in notification tray
+		| LR_DEFAULTCOLOR);
 
 	StringCbCopyW (tnid.szTip, sizeof(tnid.szTip), L"VeraCrypt");
 
@@ -9878,7 +9906,7 @@ BOOL TaskBarIconChange (HWND hwnd, int iconId)
 		ScreenDPI >= 120 ? 0 : 16,
 		(ScreenDPI >= 120 ? LR_DEFAULTSIZE : 0)
 		| LR_SHARED
-		| (nCurrentOS != WIN_2000 ? LR_DEFAULTCOLOR : LR_VGACOLOR)); // Windows 2000 cannot display more than 16 fixed colors in notification tray
+		| LR_DEFAULTCOLOR);
 
 	return Shell_NotifyIcon (NIM_MODIFY, &tnid);
 }
@@ -10423,7 +10451,7 @@ static void HandleHotKey (HWND hwndDlg, WPARAM wParam)
 				MessageBeep (0xFFFFFFFF);
 		}
 		TaskBarIconRemove (hwndDlg);
-		UnregisterWtsNotification(hwndDlg);
+		UnregisterWtsAndPowerNotification(hwndDlg);
 		EndMainDlg (hwndDlg);
 		break;
 
@@ -11258,26 +11286,25 @@ static BOOL CALLBACK PerformanceSettingsDlgProc (HWND hwndDlg, UINT msg, WPARAM 
 				EnableWindow (GetDlgItem (hwndDlg, IDC_ENABLE_RAM_ENCRYPTION), FALSE);
 			}
 
-			SYSTEM_INFO sysInfo;
-			GetSystemInfo (&sysInfo);
+			size_t cpuCount = GetCpuCount(NULL);
 
 			HWND freeCpuCombo = GetDlgItem (hwndDlg, IDC_ENCRYPTION_FREE_CPU_COUNT);
 			uint32 encryptionFreeCpuCount = ReadEncryptionThreadPoolFreeCpuCountLimit();
 
-			if (encryptionFreeCpuCount > sysInfo.dwNumberOfProcessors - 1)
-				encryptionFreeCpuCount = sysInfo.dwNumberOfProcessors - 1;
+			if (encryptionFreeCpuCount > (uint32) (cpuCount - 1))
+				encryptionFreeCpuCount = (uint32) (cpuCount - 1);
 
-			for (uint32 i = 1; i < sysInfo.dwNumberOfProcessors; ++i)
+			for (uint32 i = 1; i < cpuCount; ++i)
 			{
 				wstringstream s;
 				s << i;
 				AddComboPair (freeCpuCombo, s.str().c_str(), i);
 			}
 
-			if (sysInfo.dwNumberOfProcessors < 2 || encryptionFreeCpuCount == 0)
+			if (cpuCount < 2 || encryptionFreeCpuCount == 0)
 				EnableWindow (freeCpuCombo, FALSE);
 
-			if (sysInfo.dwNumberOfProcessors < 2)
+			if (cpuCount < 2)
 				EnableWindow (GetDlgItem (hwndDlg, IDC_LIMIT_ENC_THREAD_POOL), FALSE);
 
 			if (encryptionFreeCpuCount != 0)

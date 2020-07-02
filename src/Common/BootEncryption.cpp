@@ -5169,15 +5169,18 @@ namespace VeraCrypt
 #endif
 #ifndef SETUP
 	void BootEncryption::CheckRequirements ()
-	{
-		if (nCurrentOS == WIN_2000)
-			throw ErrorException ("SYS_ENCRYPTION_UNSUPPORTED_ON_CURRENT_OS", SRC_POS);
- 
+	{ 
 		if (CurrentOSMajor == 6 && CurrentOSMinor == 0 && CurrentOSServicePack < 1)
 			throw ErrorException ("SYS_ENCRYPTION_UNSUPPORTED_ON_VISTA_SP0", SRC_POS);
 
 		if (IsNonInstallMode())
 			throw ErrorException ("FEATURE_REQUIRES_INSTALLATION", SRC_POS);
+
+		/* check if the system drive is already encrypted by BitLocker */
+		wchar_t windowsDrive = (wchar_t) towupper (GetWindowsDirectory()[0]);
+		BitLockerEncryptionStatus bitLockerStatus = GetBitLockerEncryptionStatus (windowsDrive);
+		if (bitLockerStatus == BL_Status_Protected)
+			throw ErrorException ("SYSENC_BITLOCKER_CONFLICT", SRC_POS);
 
 		SystemDriveConfiguration config = GetSystemDriveConfiguration ();
 

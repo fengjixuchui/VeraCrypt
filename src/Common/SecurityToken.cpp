@@ -26,11 +26,11 @@
 #	include <dlfcn.h>
 #endif
 
-#include "SecurityToken.h"
-
-#ifndef burn
-#	define burn Memory::Erase
+#ifdef TC_WINDOWS
+#define move_ptr	std::move
 #endif
+
+#include "SecurityToken.h"
 
 using namespace std;
 
@@ -548,8 +548,8 @@ namespace VeraCrypt
 		if (status != CKR_OK)
 			throw Pkcs11Exception (status);
 
-		PinCallback = std::move(pinCallback);
-		WarningCallback = std::move(warningCallback);
+		PinCallback = move_ptr(pinCallback);
+		WarningCallback = move_ptr(warningCallback);
 
 		Initialized = true;
 	}

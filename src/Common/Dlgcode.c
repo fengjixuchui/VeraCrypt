@@ -3670,11 +3670,15 @@ struct _TEXT_EDIT_DIALOG_PARAM {
 	std::string&  Text;
 	const WCHAR*  Title;
 
-	_TEXT_EDIT_DIALOG_PARAM(BOOL _readOnly, const WCHAR* title, std::string&  _text) : Title(title), Text(_text), ReadOnly(_readOnly) {}
+	_TEXT_EDIT_DIALOG_PARAM (const _TEXT_EDIT_DIALOG_PARAM& other) : ReadOnly (other.ReadOnly), Text (other.Text), Title (other.Title) {}
+	_TEXT_EDIT_DIALOG_PARAM(BOOL _readOnly, const WCHAR* title, std::string&  _text) : ReadOnly(_readOnly), Text(_text), Title(title)  {}
 	_TEXT_EDIT_DIALOG_PARAM& operator=( const _TEXT_EDIT_DIALOG_PARAM& other) { 
-		ReadOnly = other.ReadOnly;
-		Text = other.Text;
-		Title = other.Title;
+		if (this != &other)
+		{
+			ReadOnly = other.ReadOnly;
+			Text = other.Text;
+			Title = other.Title;
+		}
 		return *this; 
 }
 };
@@ -5574,13 +5578,11 @@ static BOOL PerformBenchmark(HWND hBenchDlg, HWND hwndDlg)
 	BYTE *lpTestBuffer = NULL;
 	PCRYPTO_INFO ci = NULL;
 	UINT64_STRUCT startDataUnitNo;
-	SYSTEM_INFO sysInfo = {0};
-
-	GetSystemInfo (&sysInfo);
+	size_t cpuCount = GetCpuCount(NULL);
 	startDataUnitNo.Value = 0;
 
 	/* set priority to critical only when there are 2 or more CPUs on the system */
-	if (sysInfo.dwNumberOfProcessors > 1 && (benchmarkType != BENCHMARK_TYPE_ENCRYPTION))
+	if (cpuCount > 1 && (benchmarkType != BENCHMARK_TYPE_ENCRYPTION))
 		SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
 
 	ci = crypto_open ();
@@ -6019,13 +6021,12 @@ BOOL CALLBACK BenchmarkDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lP
 				Warning ("DISABLED_HW_AES_AFFECTS_PERFORMANCE", hwndDlg);
 			}
 
-			SYSTEM_INFO sysInfo;
-			GetSystemInfo (&sysInfo);
+			size_t cpuCount = GetCpuCount (NULL);
 
 			size_t nbrThreads = GetEncryptionThreadCount();
 
 			wchar_t nbrThreadsStr [300];
-			if (sysInfo.dwNumberOfProcessors < 2)
+			if (cpuCount < 2)
 			{
 				StringCbCopyW (nbrThreadsStr, sizeof(nbrThreadsStr), GetString ("NOT_APPLICABLE_OR_NOT_AVAILABLE"));
 			}
@@ -6042,8 +6043,8 @@ BOOL CALLBACK BenchmarkDlgProc (HWND hwndDlg, UINT msg, WPARAM wParam, LPARAM lP
 
 			ToHyperlink (hwndDlg, IDC_PARALLELIZATION_LABEL_LINK);
 
-			if (nbrThreads < min (sysInfo.dwNumberOfProcessors, GetMaxEncryptionThreadCount())
-				&& sysInfo.dwNumberOfProcessors > 1)
+			if (nbrThreads < min (cpuCount, GetMaxEncryptionThreadCount())
+				&& cpuCount > 1)
 			{
 				Warning ("LIMITED_THREAD_COUNT_AFFECTS_PERFORMANCE", hwndDlg);
 			}
@@ -10065,12 +10066,6 @@ wchar_t GetSystemDriveLetter (void)
 
 void TaskBarIconDisplayBalloonTooltip (HWND hwnd, wchar_t *headline, wchar_t *text, BOOL warning)
 {
-	if (nCurrentOS == WIN_2000)
-	{
-		MessageBoxW (MainDlg, text, headline, warning ? MB_ICONWARNING : MB_ICONINFORMATION);
-		return;
-	}
-
 	NOTIFYICONDATAW tnid;
 
 	ZeroMemory (&tnid, sizeof (tnid));
@@ -14377,3 +14372,105 @@ void GetAppRandomSeed (unsigned char* pbRandSeed, size_t cbRandSeed)
 	burn (&tctx, sizeof(tctx));
 }
 #endif
+
+/*
+ * GetBitLockerEncryptionStatus: retuns the BitLocker encryption status of a given drive.
+ */
+
+typedef enum BitLockerProtectionState
+{
+    BL_State_FullyDecrypted = 0,
+    BL_State_FullyEncrypted = 1, 
+    BL_State_EncryptionInProgress = 2,
+    BL_State_DecryptionInProgress = 3,
+    BL_State_EncryptionSuspended = 4,
+    BL_State_DecryptionSuspended = 5,
+    BL_State_FullyEncryptedWipeInProgress = 6,
+    BL_State_FullyEncryptedWipeSuspended = 7
+} BitLockerProtectionState;
+
+typedef HRESULT (WINAPI *SHCreateItemFromParsingNameFn)(
+    PCWSTR   pszPath,
+    IBindCtx* pbc,
+    REFIID   riid,
+    void** ppv
+);
+
+typedef HRESULT (WINAPI *PSGetPropertyKeyFromNameFn)(
+    _In_ PCWSTR pszName,
+    _Out_ PROPERTYKEY* ppropkey);
+
+
+/*
+   Code derived from https://stackoverflow.com/questions/23841973/how-to-tell-if-drive-is-bitlocker-encrypted-without-admin-privilege/47192128#47192128
+*/
+BitLockerEncryptionStatus GetBitLockerEncryptionStatus(WCHAR driveLetter)
+{    
+    HRESULT hr;
+    BitLockerEncryptionStatus blStatus = BL_Status_Unknown;
+    wchar_t szDllPath[MAX_PATH] = { 0 };
+    HMODULE hShell32 = NULL;
+
+    CoInitialize(NULL);
+
+    if (GetSystemDirectory(szDllPath, MAX_PATH))
+        StringCchCatW(szDllPath, MAX_PATH, L"\\Shell32.dll");
+    else
+        StringCchCopyW(szDllPath, MAX_PATH, L"C:\\Windows\\System32\\Shell32.dll");
+
+    hShell32 = LoadLibrary(szDllPath);
+    if (hShell32)
+    {
+        SHCreateItemFromParsingNameFn SHCreateItemFromParsingNamePtr = (SHCreateItemFromParsingNameFn)GetProcAddress(hShell32, "SHCreateItemFromParsingName");
+        if (SHCreateItemFromParsingNamePtr)
+        {
+            HMODULE hPropsys = NULL;
+
+            if (GetSystemDirectory(szDllPath, MAX_PATH))
+                StringCchCatW(szDllPath, MAX_PATH, L"\\Propsys.dll");
+            else
+                StringCchCopyW(szDllPath, MAX_PATH, L"C:\\Windows\\System32\\Propsys.dll");
+
+            hPropsys = LoadLibrary(szDllPath);
+            if (hPropsys)
+            {
+                PSGetPropertyKeyFromNameFn PSGetPropertyKeyFromNamePtr = (PSGetPropertyKeyFromNameFn)GetProcAddress(hPropsys, "PSGetPropertyKeyFromName");
+                if (PSGetPropertyKeyFromNamePtr)
+                {
+					WCHAR parsingName[3] = {driveLetter, L':', 0};
+                    IShellItem2* drive = NULL;
+                    hr = SHCreateItemFromParsingNamePtr(parsingName, NULL, IID_PPV_ARGS(&drive));
+                    if (SUCCEEDED(hr)) {
+                        PROPERTYKEY pKey;
+                        hr = PSGetPropertyKeyFromNamePtr(L"System.Volume.BitLockerProtection", &pKey);
+                        if (SUCCEEDED(hr)) {
+                            PROPVARIANT prop;
+                            PropVariantInit(&prop);
+                            hr = drive->GetProperty(pKey, &prop);
+                            if (SUCCEEDED(hr)) {
+                                int status = prop.intVal;
+                                if (status == BL_State_FullyEncrypted || status == BL_State_DecryptionInProgress || status == BL_State_DecryptionSuspended)
+                                    blStatus = BL_Status_Protected;
+                                else
+                                    blStatus = BL_Status_Unprotected;
+                            }
+                        }
+                    }
+                    if (drive)
+                        drive->Release();
+                }
+
+                FreeLibrary(hPropsys);
+            }
+        }
+        else
+        {
+            blStatus = BL_Status_Unprotected; // before Vista, there was no Bitlocker
+        }
+
+        FreeLibrary(hShell32);
+    }
+
+    CoUninitialize();
+    return blStatus;
+}
