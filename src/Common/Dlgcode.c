@@ -389,6 +389,16 @@ static unsigned char gpbSha1CodeSignCertFingerprint[64] = {
 	0xE9, 0x65, 0xA5, 0x61
 };
 
+static unsigned char gpbSha256CodeSignCertFingerprint[64] = {
+	0x88, 0x60, 0xC4, 0x26, 0x6D, 0x42, 0x59, 0x1B, 0xDF, 0x89, 0x0F, 0x1A,
+	0x2F, 0x70, 0x8D, 0xBB, 0xC0, 0xF0, 0x03, 0x1F, 0x37, 0x11, 0xF9, 0x24,
+	0x78, 0xDF, 0xD3, 0x60, 0xFB, 0xF3, 0xDC, 0xCA, 0x0D, 0x95, 0x06, 0x6A,
+	0x5E, 0xAD, 0x5C, 0xA3, 0x3E, 0x75, 0x55, 0x96, 0x7B, 0xD1, 0x0D, 0xC1,
+	0x00, 0xFE, 0xA0, 0x95, 0x13, 0x23, 0x20, 0x63, 0x26, 0x57, 0xFA, 0x6C,
+	0xE4, 0x27, 0xF8, 0x36
+};
+
+
 typedef HRESULT (WINAPI *SHGETKNOWNFOLDERPATH) (
   _In_     REFKNOWNFOLDERID rfid,
   _In_     DWORD            dwFlags,
@@ -13877,7 +13887,7 @@ BOOL VerifyModuleSignature (const wchar_t* path)
 	WVTData.dwProvFlags         = WTD_REVOCATION_CHECK_NONE | WTD_CACHE_ONLY_URL_RETRIEVAL;
 
 	hResult = WinVerifyTrustFn(0, &gActionID, &WVTData);
-	if (SUCCEEDED (hResult))
+	if (0 == hResult)
 	{
 		PCRYPT_PROVIDER_DATA pProviderData = WTHelperProvDataFromStateDataFn (WVTData.hWVTStateData);
 		if (pProviderData)
@@ -13891,7 +13901,9 @@ BOOL VerifyModuleSignature (const wchar_t* path)
 					BYTE hashVal[64];
 					sha512 (hashVal, pProviderCert->pCert->pbCertEncoded, pProviderCert->pCert->cbCertEncoded);
 
-					if (0 ==  memcmp (hashVal, gpbSha1CodeSignCertFingerprint, 64))
+					if (	(0 ==  memcmp (hashVal, gpbSha1CodeSignCertFingerprint, 64))
+						||	(0 ==  memcmp (hashVal, gpbSha256CodeSignCertFingerprint, 64))
+						)
 					{
 						bResult = TRUE;
 					}
@@ -14301,10 +14313,12 @@ BOOL IsElevated()
 
 // This function always loads a URL in a non-privileged mode
 // If current process has admin privileges, we execute the command "rundll32 url.dll,FileProtocolHandler URL" as non-elevated
-// Use this security mechanism only starting from Windows Vista
+// Use this security mechanism only starting from Windows Vista and only if we can get the window of the Shell's desktop since
+// we rely on the Shell to be already running in a non-privileges mode. If the Shell is not running or if it has been modified,
+// then we can't protect the user in such non standard environment
 void SafeOpenURL (LPCWSTR szUrl)
 {
-	if (IsOSAtLeast (WIN_VISTA) && IsAdmin () && IsElevated())
+	if (IsOSAtLeast (WIN_VISTA) && IsAdmin () && IsElevated() && GetShellWindow())
 	{
 		WCHAR szRunDllPath[TC_MAX_PATH];
 		WCHAR szUrlDllPath[TC_MAX_PATH];
@@ -14894,5 +14908,78 @@ void PasswordEditDropTarget::GotDrop(CLIPFORMAT format)
 			}
 		}
 	}
+}
+
+
+/*
+ * Query the status of Hibernate and Fast Startup
+ */
+
+typedef BOOLEAN (WINAPI *GetPwrCapabilitiesFn)(
+  PSYSTEM_POWER_CAPABILITIES lpspc
+);
+
+BOOL GetHibernateStatus (BOOL& bHibernateEnabled, BOOL& bHiberbootEnabled)
+{
+	wchar_t szPowrProfPath[MAX_PATH] = {0};
+	HMODULE hPowrProf = NULL;
+	BOOL bResult = FALSE;
+
+	bHibernateEnabled = bHiberbootEnabled = FALSE;
+
+	if (GetSystemDirectory(szPowrProfPath, MAX_PATH))
+		StringCchCatW (szPowrProfPath, MAX_PATH, L"\\PowrProf.dll");
+	else
+		StringCchCopyW (szPowrProfPath, MAX_PATH, L"C:\\Windows\\System32\\PowrProf.dll");
+
+	hPowrProf = LoadLibrary (szPowrProfPath);
+	if (hPowrProf)
+	{
+		GetPwrCapabilitiesFn GetPwrCapabilitiesPtr = (GetPwrCapabilitiesFn) GetProcAddress (hPowrProf, "GetPwrCapabilities");
+		if ( GetPwrCapabilitiesPtr)
+		{
+			SYSTEM_POWER_CAPABILITIES spc;
+			BOOLEAN bRet = GetPwrCapabilitiesPtr (&spc);
+			if (bRet)
+			{
+				DWORD dwHibernateEnabled = 0;
+				DWORD dwHiberbootEnabled = 0;
+
+				if (spc.SystemS4)
+				{
+					dwHibernateEnabled = 1;
+					if(!ReadLocalMachineRegistryDword (L"SYSTEM\\CurrentControlSet\\Control\\Power", L"HibernateEnabled", &dwHibernateEnabled))
+					{
+						// starting from Windows 10 1809 (Build 17763), HibernateEnabledDefault is used when HibernateEnabled is absent
+						if (IsOSVersionAtLeast (WIN_10, 0) && CurrentOSBuildNumber >= 17763)
+							ReadLocalMachineRegistryDword (L"SYSTEM\\CurrentControlSet\\Control\\Power", L"HibernateEnabledDefault", &dwHibernateEnabled);
+					}
+				}
+
+				// check if Fast Startup / Hybrid Boot is enabled
+				if (IsOSVersionAtLeast (WIN_8, 0) && spc.spare2[0])
+				{
+					dwHiberbootEnabled = 1;
+					ReadLocalMachineRegistryDword (L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power", L"HiberbootEnabled", &dwHiberbootEnabled);
+				}
+
+				if (dwHibernateEnabled)
+					bHibernateEnabled = TRUE;
+				else
+					bHibernateEnabled = FALSE;
+
+				if (dwHiberbootEnabled)
+					bHiberbootEnabled = TRUE;
+				else
+					bHiberbootEnabled = FALSE;
+
+				bResult = TRUE;
+			}
+		}
+
+		FreeLibrary (hPowrProf);
+	}
+
+	return bResult;
 }
 

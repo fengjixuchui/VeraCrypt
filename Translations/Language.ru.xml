@@ -1444,6 +1444,8 @@
     <entry lang="ru" key="IDC_FORCE_NEXT_BOOT_VERACRYPT">Принудительный запуск VeraCrypt при следующей загрузке</entry>
     <entry lang="ru" key="IDC_FORCE_VERACRYPT_BOOT_ENTRY">Принудительное присутствие пункта VeraCrypt в меню загрузки прошивки EFI</entry>
     <entry lang="ru" key="IDC_FORCE_VERACRYPT_FIRST_BOOT_ENTRY">Пункт VeraCrypt - первый в меню загрузки прошивки EFI</entry>
+    <entry lang="ru" key="RAM_ENCRYPTION_DISABLE_HIBERNATE">ВНИМАНИЕ: Шифрование ОЗУ несовместимо с имеющимися в  Windows функциями гибернации и быстрого запуска. Прежде чем активировать шифрование ОЗУ, VeraCrypt требуется их отключить.\n\nПродолжить?</entry>
+    <entry lang="ru" key="CONFIRM_DISABLE_FAST_STARTUP">ВНИМАНИЕ: В Windows включена функция быстрого запуска, которая вызывает проблемы в работе с томами VeraCrypt. Для большей безопасности и удобства использования рекомендуется её отключить.\n\nХотите отключить быстрый запуск Windows?</entry>
   </localization>
   <xs:schema attributeFormDefault="unqualified" elementFormDefault="qualified" xmlns:xs="http://www.w3.org/2001/XMLSchema">
     <xs:element name="VeraCrypt">

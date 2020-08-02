@@ -5633,8 +5633,24 @@ BOOL CALLBACK PageDialogProc (HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPa
 
 		if (hw == CBN_EDITCHANGE && nCurPageNo == VOLUME_LOCATION_PAGE)
 		{
+			BOOL bValidEntry = (GetWindowTextLength (GetDlgItem (hCurPage, IDC_COMBO_BOX)) > 0)? TRUE : FALSE;
+
+			if (bValidEntry && !bDevice)
+			{
+				/* check that the entered path is not for an existing directory */
+				WCHAR szEnteredFilePath[TC_MAX_PATH + 1] = {0};
+				GetWindowTextW (GetDlgItem (hCurPage, IDC_COMBO_BOX), szEnteredFilePath, ARRAYSIZE (szEnteredFilePath));
+				RelativePath2Absolute (szEnteredFilePath);
+
+				DWORD dwAttr = GetFileAttributes (szEnteredFilePath);
+				if ((dwAttr != INVALID_FILE_ATTRIBUTES) && (dwAttr & FILE_ATTRIBUTE_DIRECTORY))
+				{
+					/* this is a directory. Consider it as invalid */
+					bValidEntry = FALSE;
+				}
+			}
 			EnableWindow (GetDlgItem (GetParent (hwndDlg), IDC_NEXT),
-				GetWindowTextLength (GetDlgItem (hCurPage, IDC_COMBO_BOX)) > 0);
+				bValidEntry);
 
 			bDeviceTransformModeChoiceMade = FALSE;
 			bInPlaceEncNonSys = FALSE;
@@ -8453,6 +8469,7 @@ retryCDDriveCheck:
 			else if (nCurPageNo == FORMAT_PAGE)
 			{
 				/* Format start  (the 'Next' button has been clicked on the Format page) */
+				static BOOL g_bFastStartupCheckDone = FALSE;
 
 				if (bVolTransformThreadRunning || bVolTransformThreadToRun)
 					return 1;
@@ -8460,6 +8477,23 @@ retryCDDriveCheck:
 				bVolTransformThreadCancel = FALSE;
 
 				bVolTransformThreadToRun = TRUE;
+
+				// check if Fast Startup is enabled and if yes then offer to disable it
+				if (!g_bFastStartupCheckDone)
+				{
+					BOOL bHibernateEnabled = FALSE, bHiberbootEnabled = FALSE;
+					if (GetHibernateStatus (bHibernateEnabled, bHiberbootEnabled) && bHiberbootEnabled)
+					{
+						if (AskWarnYesNo ("CONFIRM_DISABLE_FAST_STARTUP", hwndDlg) == IDYES)
+						{
+							if (!IsAdmin () && IsUacSupported ())
+								UacWriteLocalMachineRegistryDword (hwndDlg, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power", L"HiberbootEnabled", 0);
+							else
+								WriteLocalMachineRegistryDword (L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Power", L"HiberbootEnabled", 0);
+						}
+					}
+					g_bFastStartupCheckDone = true;
+				}
 
 				fileSystem = (int) SendMessage (GetDlgItem (hCurPage, IDC_FILESYS), CB_GETITEMDATA,
 					SendMessage (GetDlgItem (hCurPage, IDC_FILESYS), CB_GETCURSEL, 0, 0) , 0);
