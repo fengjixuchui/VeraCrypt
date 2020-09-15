@@ -258,7 +258,10 @@ namespace VeraCrypt
 
 		case Step::FormatOptions:
 			{
-				VolumeFormatOptionsWizardPage *page = new VolumeFormatOptionsWizardPage (GetPageParent(), VolumeSize, SectorSize,
+				shared_ptr <VolumeLayout> layout ((OuterVolume || SelectedVolumeType != VolumeType::Hidden)? (VolumeLayout*) new VolumeLayoutV2Normal() : (VolumeLayout*) new VolumeLayoutV2Hidden());
+				uint64 filesystemSize = layout->GetMaxDataSize (VolumeSize);
+
+				VolumeFormatOptionsWizardPage *page = new VolumeFormatOptionsWizardPage (GetPageParent(), filesystemSize, SectorSize,
 					SelectedVolumePath.IsDevice() && (OuterVolume || SelectedVolumeType != VolumeType::Hidden), OuterVolume, LargeFilesSupport);
 
 				page->SetPageTitle (_("Format Options"));
@@ -466,25 +469,7 @@ namespace VeraCrypt
 
 #ifdef TC_UNIX
 				// Format non-FAT filesystem
-				const char *fsFormatter = nullptr;
-
-				switch (SelectedFilesystemType)
-				{
-#if defined (TC_LINUX)
-				case VolumeCreationOptions::FilesystemType::Ext2:		fsFormatter = "mkfs.ext2"; break;
-				case VolumeCreationOptions::FilesystemType::Ext3:		fsFormatter = "mkfs.ext3"; break;
-				case VolumeCreationOptions::FilesystemType::Ext4:		fsFormatter = "mkfs.ext4"; break;
-				case VolumeCreationOptions::FilesystemType::NTFS:		fsFormatter = "mkfs.ntfs"; break;
-				case VolumeCreationOptions::FilesystemType::exFAT:		fsFormatter = "mkfs.exfat"; break;
-#elif defined (TC_MACOSX)
-				case VolumeCreationOptions::FilesystemType::MacOsExt:	fsFormatter = "newfs_hfs"; break;
-				case VolumeCreationOptions::FilesystemType::exFAT:		fsFormatter = "newfs_exfat"; break;
-				case VolumeCreationOptions::FilesystemType::APFS:		fsFormatter = "newfs_apfs"; break;
-#elif defined (TC_FREEBSD) || defined (TC_SOLARIS)
-				case VolumeCreationOptions::FilesystemType::UFS:		fsFormatter = "newfs" ; break;
-#endif
-				default: break;
-				}
+				const char *fsFormatter = VolumeCreationOptions::FilesystemType::GetFsFormatter (SelectedFilesystemType);
 
 				if (fsFormatter)
 				{
@@ -502,6 +487,9 @@ namespace VeraCrypt
 
 					shared_ptr <VolumeInfo> volume = Core->MountVolume (mountOptions);
 					finally_do_arg (shared_ptr <VolumeInfo>, volume, { Core->DismountVolume (finally_arg, true); });
+					
+					shared_ptr <VolumeLayout> layout((volume->Type == VolumeType::Normal)? (VolumeLayout*) new VolumeLayoutV2Normal() : (VolumeLayout*) new VolumeLayoutV2Hidden());
+					uint64 filesystemSize = layout->GetMaxDataSize (VolumeSize);
 
 					Thread::Sleep (2000);	// Try to prevent race conditions caused by OS
 
@@ -543,6 +531,16 @@ namespace VeraCrypt
 					// Perform a quick NTFS formatting
 					if (SelectedFilesystemType == VolumeCreationOptions::FilesystemType::NTFS)
 						args.push_back ("-f");
+
+					if (SelectedFilesystemType == VolumeCreationOptions::FilesystemType::Btrfs)
+					{
+						args.push_back ("-f");
+						if (filesystemSize < VC_MIN_LARGE_BTRFS_VOLUME_SIZE)
+						{
+							// use mixed mode for small BTRFS volumes
+							args.push_back ("-M");
+						}
+					}
 
 					args.push_back (string (virtualDevice));
 

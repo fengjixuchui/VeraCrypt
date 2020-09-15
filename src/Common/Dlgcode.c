@@ -1219,6 +1219,44 @@ void EnableCloseButton (HWND hwndDlg)
 	EnableMenuItem (GetSystemMenu (hwndDlg, FALSE), SC_CLOSE, MF_BYCOMMAND | MF_ENABLED);
 }
 
+void HandlePasswordEditWmChar (HWND hwnd, WPARAM wParam)
+{
+	DWORD dwStartPos = 0, dwEndPos = 0;
+	short vk = VkKeyScanW ((WCHAR) wParam);
+	BYTE vkCode = LOBYTE (vk);
+	BYTE vkState = HIBYTE (vk);
+	bool ctrlPressed = (vkState & 2) && !(vkState & 4);
+	int dwMaxPassLen = (int) SendMessage (hwnd, EM_GETLIMITTEXT, 0, 0);
+
+	// check if there is a selected text
+	SendMessage (hwnd,	EM_GETSEL, (WPARAM) &dwStartPos, (LPARAM) &dwEndPos);
+
+	if ((dwStartPos == dwEndPos) 
+		&& (vkCode != VK_DELETE) && (vkCode != VK_BACK) 
+		&& !ctrlPressed 
+		&& (GetWindowTextLength (hwnd) == dwMaxPassLen))
+	{
+		EDITBALLOONTIP ebt;
+		DWORD dwTextSize = (DWORD) wcslen (GetString ("PASSWORD_MAXLENGTH_REACHED")) + 16;
+		WCHAR* szErrorText = (WCHAR*) malloc (dwTextSize * sizeof (WCHAR));
+
+		StringCchPrintf (szErrorText, dwTextSize, GetString ("PASSWORD_MAXLENGTH_REACHED"), dwMaxPassLen);
+
+		ebt.cbStruct = sizeof( EDITBALLOONTIP );
+		ebt.pszText = szErrorText;
+		ebt.pszTitle = lpszTitle;
+		ebt.ttiIcon = TTI_ERROR_LARGE;    // tooltip warning icon
+
+		SendMessage(hwnd, EM_SHOWBALLOONTIP, 0, (LPARAM)&ebt);
+
+		MessageBeep (0xFFFFFFFF);
+
+		free (szErrorText);
+	}
+	else
+		SendMessage(hwnd, EM_HIDEBALLOONTIP, 0, 0);
+}
+
 // Protects an input field from having its content updated by a Paste action (call ToBootPwdField() to use this).
 static LRESULT CALLBACK BootPwdFieldProc (HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -1228,6 +1266,9 @@ static LRESULT CALLBACK BootPwdFieldProc (HWND hwnd, UINT message, WPARAM wParam
 	{
 	case WM_PASTE:
 		return 1;
+	case WM_CHAR:
+		HandlePasswordEditWmChar (hwnd, wParam);
+		break;
 	}
 
 	return CallWindowProcW (wp, hwnd, message, wParam, lParam);
@@ -1288,9 +1329,13 @@ static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wPar
 						if (curLen == dwMaxPassLen)
 						{
 							EDITBALLOONTIP ebt;
+							DWORD dwTextSize = (DWORD) wcslen (GetString ("PASSWORD_MAXLENGTH_REACHED")) + 16;
+							WCHAR* szErrorText = (WCHAR*) malloc (dwTextSize * sizeof (WCHAR));
+
+							StringCchPrintf (szErrorText, dwTextSize, GetString ("PASSWORD_MAXLENGTH_REACHED"), dwMaxPassLen);
 
 							ebt.cbStruct = sizeof( EDITBALLOONTIP );
-							ebt.pszText = GetString ("PASSWORD_MAXLENGTH_REACHED");
+							ebt.pszText = szErrorText;
 							ebt.pszTitle = lpszTitle;
 							ebt.ttiIcon = TTI_ERROR_LARGE;    // tooltip warning icon
 
@@ -1298,20 +1343,28 @@ static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wPar
 
 							MessageBeep (0xFFFFFFFF);
 
+							free (szErrorText);
+
 							bBlock = true;
 						}
 						else if ((txtlen + curLen) > dwMaxPassLen)
 						{
 							EDITBALLOONTIP ebt;
+							DWORD dwTextSize = (DWORD) wcslen (GetString ("PASSWORD_PASTED_TRUNCATED")) + 16;
+							WCHAR* szErrorText = (WCHAR*) malloc (dwTextSize * sizeof (WCHAR));
+
+							StringCchPrintf (szErrorText, dwTextSize, GetString ("PASSWORD_PASTED_TRUNCATED"), dwMaxPassLen);
 
 							ebt.cbStruct = sizeof( EDITBALLOONTIP );
-							ebt.pszText = GetString ("PASSWORD_PASTED_TRUNCATED");
+							ebt.pszText = szErrorText;
 							ebt.pszTitle = lpszTitle;
 							ebt.ttiIcon = TTI_WARNING_LARGE;    // tooltip warning icon
 
 							SendMessage(hwnd, EM_SHOWBALLOONTIP, 0, (LPARAM)&ebt);
 
 							MessageBeep (0xFFFFFFFF);
+
+							free (szErrorText);
 						}
 						else
 							 SendMessage(hwnd, EM_HIDEBALLOONTIP, 0, 0);
@@ -1326,36 +1379,7 @@ static LRESULT CALLBACK NormalPwdFieldProc (HWND hwnd, UINT message, WPARAM wPar
 		}
 		break;
 	case WM_CHAR:
-		{
-			DWORD dwStartPos = 0, dwEndPos = 0;
-			short vk = VkKeyScanW ((WCHAR) wParam);
-			BYTE vkCode = LOBYTE (vk);
-			BYTE vkState = HIBYTE (vk);
-			bool ctrlPressed = (vkState & 2) && !(vkState & 4);
-			int dwMaxPassLen = bUseLegacyMaxPasswordLength? MAX_LEGACY_PASSWORD : MAX_PASSWORD;
-
-			// check if there is a selected text
-			SendMessage (hwnd,	EM_GETSEL, (WPARAM) &dwStartPos, (LPARAM) &dwEndPos);
-
-			if ((dwStartPos == dwEndPos) 
-				&& (vkCode != VK_DELETE) && (vkCode != VK_BACK) 
-				&& !ctrlPressed 
-				&& (GetWindowTextLength (hwnd) == dwMaxPassLen))
-			{
-				EDITBALLOONTIP ebt;
-
-				ebt.cbStruct = sizeof( EDITBALLOONTIP );
-				ebt.pszText = GetString ("PASSWORD_MAXLENGTH_REACHED");
-				ebt.pszTitle = lpszTitle;
-				ebt.ttiIcon = TTI_ERROR_LARGE;    // tooltip warning icon
-
-				SendMessage(hwnd, EM_SHOWBALLOONTIP, 0, (LPARAM)&ebt);
-
-				MessageBeep (0xFFFFFFFF);
-			}
-			else
-				 SendMessage(hwnd, EM_HIDEBALLOONTIP, 0, 0);
-		}
+		HandlePasswordEditWmChar (hwnd, wParam);
 		break;
 	}
 
@@ -13227,11 +13251,21 @@ BOOL GetPassword (HWND hwndDlg, UINT ctrlID, char* passValue, int bufSize, BOOL 
 		passValue [0] = 0;
 		if (bShowError)
 		{
-			SetFocus (GetDlgItem(hwndDlg, ctrlID));
 			if (GetLastError () == ERROR_INSUFFICIENT_BUFFER)
-				Error ((bufSize == (MAX_LEGACY_PASSWORD + 1))? "LEGACY_PASSWORD_UTF8_TOO_LONG": "PASSWORD_UTF8_TOO_LONG", hwndDlg);
+			{
+				DWORD dwTextSize = (DWORD) wcslen (GetString ("PASSWORD_UTF8_TOO_LONG")) + 16;
+				WCHAR* szErrorText = (WCHAR*) malloc (dwTextSize * sizeof (WCHAR));
+
+				// bufSize is equal to maximum password length plus one
+				StringCchPrintf (szErrorText, dwTextSize, GetString ("PASSWORD_UTF8_TOO_LONG"), (bufSize - 1));
+
+				ErrorDirect (szErrorText, hwndDlg);
+
+				free (szErrorText);
+			}
 			else
 				Error ("PASSWORD_UTF8_INVALID", hwndDlg);
+			SetFocus (GetDlgItem(hwndDlg, ctrlID));
 		}
 	}
 
@@ -14899,15 +14933,21 @@ void PasswordEditDropTarget::GotDrop(CLIPFORMAT format)
 				if (bTruncated)
 				{
 					EDITBALLOONTIP ebt;
+					DWORD dwTextSize = (DWORD) wcslen (GetString ("PASSWORD_PASTED_TRUNCATED")) + 16;
+					WCHAR* szErrorText = (WCHAR*) malloc (dwTextSize * sizeof (WCHAR));
+
+					StringCchPrintf (szErrorText, dwTextSize, GetString ("PASSWORD_PASTED_TRUNCATED"), maxLen);
 
 					ebt.cbStruct = sizeof( EDITBALLOONTIP );
-					ebt.pszText = GetString ("PASSWORD_PASTED_TRUNCATED");
+					ebt.pszText = szErrorText;
 					ebt.pszTitle = lpszTitle;
 					ebt.ttiIcon = TTI_WARNING_LARGE;    // tooltip warning icon
 
 					SendMessage(hChild, EM_SHOWBALLOONTIP, 0, (LPARAM)&ebt);
 
 					MessageBeep (0xFFFFFFFF);
+
+					free (szErrorText);
 				}
 			}
 

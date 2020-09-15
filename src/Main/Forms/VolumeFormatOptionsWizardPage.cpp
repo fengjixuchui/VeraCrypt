@@ -17,7 +17,7 @@
 
 namespace VeraCrypt
 {
-	VolumeFormatOptionsWizardPage::VolumeFormatOptionsWizardPage (wxPanel* parent, uint64 volumeSize, uint32 sectorSize, bool enableQuickFormatButton, bool disableNoneFilesystem, bool disable32bitFilesystems)
+	VolumeFormatOptionsWizardPage::VolumeFormatOptionsWizardPage (wxPanel* parent, uint64 filesystemSize, uint32 sectorSize, bool enableQuickFormatButton, bool disableNoneFilesystem, bool disable32bitFilesystems)
 		: VolumeFormatOptionsWizardPageBase (parent)
 	{
 		InfoStaticText->SetLabel (_(
@@ -26,7 +26,7 @@ namespace VeraCrypt
 		if (!disableNoneFilesystem)
 			FilesystemTypeChoice->Append (LangString["NONE"],	(void *) VolumeCreationOptions::FilesystemType::None);
 
-		if (!disable32bitFilesystems && volumeSize <= TC_MAX_FAT_SECTOR_COUNT * sectorSize)
+		if (!disable32bitFilesystems && filesystemSize <= TC_MAX_FAT_SECTOR_COUNT * sectorSize)
 			FilesystemTypeChoice->Append (L"FAT",			(void *) VolumeCreationOptions::FilesystemType::FAT);
 
 #ifdef TC_WINDOWS
@@ -35,9 +35,18 @@ namespace VeraCrypt
 #elif defined (TC_LINUX)
 		FilesystemTypeChoice->Append (L"Linux Ext2",		(void *) VolumeCreationOptions::FilesystemType::Ext2);
 		FilesystemTypeChoice->Append (L"Linux Ext3",		(void *) VolumeCreationOptions::FilesystemType::Ext3);
-		FilesystemTypeChoice->Append (L"Linux Ext4",		(void *) VolumeCreationOptions::FilesystemType::Ext4);
-		FilesystemTypeChoice->Append (L"NTFS",				(void *) VolumeCreationOptions::FilesystemType::NTFS);
-		FilesystemTypeChoice->Append (L"exFAT",				(void *) VolumeCreationOptions::FilesystemType::exFAT);
+		if (VolumeCreationOptions::FilesystemType::IsFsFormatterPresent (VolumeCreationOptions::FilesystemType::Ext4))
+			FilesystemTypeChoice->Append (L"Linux Ext4",		(void *) VolumeCreationOptions::FilesystemType::Ext4);		
+		if (VolumeCreationOptions::FilesystemType::IsFsFormatterPresent (VolumeCreationOptions::FilesystemType::NTFS))
+			FilesystemTypeChoice->Append (L"NTFS",				(void *) VolumeCreationOptions::FilesystemType::NTFS);
+		if (VolumeCreationOptions::FilesystemType::IsFsFormatterPresent (VolumeCreationOptions::FilesystemType::exFAT))
+			FilesystemTypeChoice->Append (L"exFAT",				(void *) VolumeCreationOptions::FilesystemType::exFAT);
+		if (VolumeCreationOptions::FilesystemType::IsFsFormatterPresent (VolumeCreationOptions::FilesystemType::Btrfs))
+		{
+			// minimum size to be able to format as Btrfs is 16777216 bytes
+			if (filesystemSize >= VC_MIN_SMALL_BTRFS_VOLUME_SIZE)
+				FilesystemTypeChoice->Append (L"Btrfs",				(void *) VolumeCreationOptions::FilesystemType::Btrfs);
+		}
 #elif defined (TC_MACOSX)
 		FilesystemTypeChoice->Append (L"Mac OS Extended",	(void *) VolumeCreationOptions::FilesystemType::MacOsExt);
 		FilesystemTypeChoice->Append (L"exFAT",				(void *) VolumeCreationOptions::FilesystemType::exFAT);
@@ -47,7 +56,7 @@ namespace VeraCrypt
 		FilesystemTypeChoice->Append (L"UFS",				(void *) VolumeCreationOptions::FilesystemType::UFS);
 #endif
 
-		if (!disable32bitFilesystems && volumeSize <= TC_MAX_FAT_SECTOR_COUNT * sectorSize)
+		if (!disable32bitFilesystems && filesystemSize <= TC_MAX_FAT_SECTOR_COUNT * sectorSize)
 			SetFilesystemType (VolumeCreationOptions::FilesystemType::FAT);
 		else
 			SetFilesystemType (VolumeCreationOptions::FilesystemType::GetPlatformNative());
@@ -83,6 +92,7 @@ namespace VeraCrypt
 		case VolumeCreationOptions::FilesystemType::Ext2:		FilesystemTypeChoice->SetStringSelection (L"Linux Ext2"); break;
 		case VolumeCreationOptions::FilesystemType::Ext3:		FilesystemTypeChoice->SetStringSelection (L"Linux Ext3"); break;
 		case VolumeCreationOptions::FilesystemType::Ext4:		FilesystemTypeChoice->SetStringSelection (L"Linux Ext4"); break;
+		case VolumeCreationOptions::FilesystemType::Btrfs:		FilesystemTypeChoice->SetStringSelection (L"Btrfs"); break;
 		case VolumeCreationOptions::FilesystemType::MacOsExt:	FilesystemTypeChoice->SetStringSelection (L"Mac OS Extended"); break;
 		case VolumeCreationOptions::FilesystemType::APFS:		FilesystemTypeChoice->SetStringSelection (L"APFS"); break;
 		case VolumeCreationOptions::FilesystemType::UFS:		FilesystemTypeChoice->SetStringSelection (L"UFS"); break;
