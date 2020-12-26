@@ -13,6 +13,8 @@
 
 #include "TCdefs.h"
 #include <ntddk.h>
+#include <initguid.h>
+#include <Ntddstor.h>
 #include "Crypto.h"
 #include "Fat.h"
 #include "Tests.h"
@@ -4940,7 +4942,7 @@ BOOL IsOSAtLeast (OSVersionEnum reqMinOS)
 		>= (major << 16 | minor << 8));
 }
 
-NTSTATUS NTAPI KeSaveExtendedProcessorState (
+NTSTATUS NTAPI KeSaveExtendedProcessorStateVC (
     __in ULONG64 Mask,
     PXSTATE_SAVE XStateSave
     )
@@ -4955,7 +4957,7 @@ NTSTATUS NTAPI KeSaveExtendedProcessorState (
 	}
 }
 
-VOID NTAPI KeRestoreExtendedProcessorState (
+VOID NTAPI KeRestoreExtendedProcessorStateVC (
 	PXSTATE_SAVE XStateSave
 	)
 {
